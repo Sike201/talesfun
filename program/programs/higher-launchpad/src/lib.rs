@@ -9,15 +9,15 @@ use anchor_spl::{
         self, Burn, CloseAccount, Mint, MintTo, SetAuthority, Token, TokenAccount, Transfer,
     },
 };
-use spl_token::instruction::AuthorityType;
+use anchor_spl::token::spl_token::instruction::AuthorityType;
 
-declare_id!("HiGHrLaunchPadXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+declare_id!("72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv");
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/// Every token has exactly 10,000,000 units (with 6 decimals = 10_000_000_000_000 raw)
-pub const FIXED_SUPPLY: u64 = 10_000_000_000_000; // 10M * 10^6
-pub const FIXED_SUPPLY_UI: u64 = 10_000_000;
+/// Every token has exactly 1,000,000,000 units (with 6 decimals = 1_000_000_000_000_000 raw)
+pub const FIXED_SUPPLY: u64 = 1_000_000_000_000_000; // 1B * 10^6
+pub const FIXED_SUPPLY_UI: u64 = 1_000_000_000;
 pub const TOKEN_DECIMALS: u8 = 6;
 
 /// Graduation threshold: 85 SOL raised (in lamports)
@@ -32,11 +32,14 @@ pub const LP_FEE_BPS: u16 = 50;
 /// Total swap fee: 100 bps = 1%
 pub const TOTAL_FEE_BPS: u16 = 100;
 
-/// Bonding curve — tokens reserved for bonding curve sales (80% of supply)
-pub const BONDING_CURVE_ALLOCATION: u64 = 8_000_000_000_000; // 8M tokens
+/// Virtual token reserve for smooth curve — matches pump.fun math
+pub const VIRTUAL_TOKEN_RESERVE_INITIAL: u64 = 1_073_000_191_000_000; // 1.073B * 10^6
 
-/// Tokens seeded into GAMM pool at graduation (20% of supply)
-pub const GAMM_POOL_ALLOCATION: u64 = 2_000_000_000_000; // 2M tokens
+/// Bonding curve — tokens available for sale (~79.3% of supply)
+pub const BONDING_CURVE_ALLOCATION: u64 = 793_100_000_000_000; // 793.1M * 10^6
+
+/// Tokens seeded into GAMM pool at graduation (~20.7% of supply)
+pub const GAMM_POOL_ALLOCATION: u64 = 206_900_000_000_000; // 206.9M * 10^6
 
 /// Platform fee on graduation: 2% of raised SOL
 pub const PLATFORM_FEE_BPS: u16 = 200;
@@ -95,7 +98,7 @@ pub mod higher_launchpad {
         token_state.tokens_sold = 0;
         token_state.total_supply = FIXED_SUPPLY;
         token_state.virtual_sol_reserve = 30_000_000_000; // 30 SOL virtual reserve for smooth curve
-        token_state.virtual_token_reserve = BONDING_CURVE_ALLOCATION;
+        token_state.virtual_token_reserve = VIRTUAL_TOKEN_RESERVE_INITIAL;
         token_state.real_sol_reserve = 0;
         token_state.real_token_reserve = BONDING_CURVE_ALLOCATION;
         token_state.creator_fees_accumulated = 0;
@@ -105,7 +108,7 @@ pub mod higher_launchpad {
 
         // Mint full supply to bonding curve token vault
         let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_program.key(),
             MintTo {
                 mint: ctx.accounts.mint.to_account_info(),
                 to: ctx.accounts.token_vault.to_account_info(),
@@ -115,12 +118,13 @@ pub mod higher_launchpad {
         token::mint_to(cpi_ctx, FIXED_SUPPLY)?;
 
         // Create on-chain metadata via Metaplex
-        let seeds = &[b"mint_authority", ctx.accounts.mint.key().as_ref(), &[ctx.bumps.mint_authority]];
+        let mint_key = ctx.accounts.mint.key();
+        let seeds = &[b"mint_authority", mint_key.as_ref(), &[ctx.bumps.mint_authority]];
         let signer_seeds = &[&seeds[..]];
 
         create_metadata_accounts_v3(
             CpiContext::new_with_signer(
-                ctx.accounts.metadata_program.to_account_info(),
+                ctx.accounts.metadata_program.key(),
                 CreateMetadataAccountsV3 {
                     metadata: ctx.accounts.metadata.to_account_info(),
                     mint: ctx.accounts.mint.to_account_info(),
@@ -164,32 +168,52 @@ pub mod higher_launchpad {
 
     /// Buy tokens from the bonding curve.
     /// Uses constant-product AMM: k = virtual_sol * virtual_tokens
+    /// Deducts 0.5% creator fee before curve calculation.
     pub fn buy(ctx: Context<Trade>, sol_amount: u64, min_tokens_out: u64) -> Result<()> {
         let token_state = &mut ctx.accounts.token_state;
 
         require!(token_state.phase == TokenPhase::Bonding, LaunchpadError::NotOnBondingCurve);
         require!(sol_amount > 0, LaunchpadError::ZeroAmount);
 
-        // Calculate tokens out using constant product formula
-        // tokens_out = virtual_token_reserve * sol_in / (virtual_sol_reserve + sol_in)
+        // Deduct creator fee before curve calculation
+        let creator_fee = (sol_amount as u128 * CREATOR_FEE_BPS as u128 / 10_000) as u64;
+        let net_sol_amount = sol_amount - creator_fee;
+
+        // Calculate tokens out using net amount after fee
         let tokens_out = calculate_tokens_out(
             token_state.virtual_sol_reserve,
             token_state.virtual_token_reserve,
-            sol_amount,
+            net_sol_amount,
         )?;
 
         require!(tokens_out >= min_tokens_out, LaunchpadError::SlippageExceeded);
         require!(tokens_out <= token_state.real_token_reserve, LaunchpadError::InsufficientLiquidity);
 
-        // Transfer SOL from buyer to vault
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
-            anchor_lang::system_program::Transfer {
-                from: ctx.accounts.user.to_account_info(),
-                to: ctx.accounts.sol_vault.to_account_info(),
-            },
-        );
-        anchor_lang::system_program::transfer(cpi_ctx, sol_amount)?;
+        // Transfer net SOL from buyer to sol_vault
+        anchor_lang::system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.user.to_account_info(),
+                    to: ctx.accounts.sol_vault.to_account_info(),
+                },
+            ),
+            net_sol_amount,
+        )?;
+
+        // Transfer creator fee from buyer to fee_escrow PDA
+        if creator_fee > 0 {
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.key(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.user.to_account_info(),
+                        to: ctx.accounts.fee_escrow.to_account_info(),
+                    },
+                ),
+                creator_fee,
+            )?;
+        }
 
         // Transfer tokens from vault to buyer
         let mint_key = token_state.mint;
@@ -197,7 +221,7 @@ pub mod higher_launchpad {
         let signer_seeds = &[&seeds[..]];
 
         let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_program.key(),
             Transfer {
                 from: ctx.accounts.token_vault.to_account_info(),
                 to: ctx.accounts.user_token_account.to_account_info(),
@@ -207,13 +231,14 @@ pub mod higher_launchpad {
         );
         token::transfer(cpi_ctx, tokens_out)?;
 
-        // Update reserves
-        token_state.virtual_sol_reserve += sol_amount;
+        // Update reserves (using net amount — fee is not part of bonding curve)
+        token_state.virtual_sol_reserve += net_sol_amount;
         token_state.virtual_token_reserve -= tokens_out;
-        token_state.real_sol_reserve += sol_amount;
+        token_state.real_sol_reserve += net_sol_amount;
         token_state.real_token_reserve -= tokens_out;
-        token_state.sol_raised += sol_amount;
+        token_state.sol_raised += net_sol_amount;
         token_state.tokens_sold += tokens_out;
+        token_state.creator_fees_accumulated += creator_fee;
 
         emit!(TradeEvent {
             mint: token_state.mint,
@@ -255,7 +280,7 @@ pub mod higher_launchpad {
 
         // Transfer tokens from seller to vault (burn mechanism)
         let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_program.key(),
             Transfer {
                 from: ctx.accounts.user_token_account.to_account_info(),
                 to: ctx.accounts.token_vault.to_account_info(),
@@ -264,15 +289,22 @@ pub mod higher_launchpad {
         );
         token::transfer(cpi_ctx, token_amount)?;
 
-        // Transfer SOL from vault to seller
+        // Transfer SOL from vault to seller via PDA-signed CPI
         let mint_key = token_state.mint;
         let seeds = &[b"sol_vault", mint_key.as_ref(), &[token_state.vault_bump]];
         let signer_seeds = &[&seeds[..]];
 
-        **ctx.accounts.sol_vault.to_account_info().try_borrow_mut_lamports()? -= sol_out;
-        **ctx.accounts.user.to_account_info().try_borrow_mut_lamports()? += sol_out;
-
-        let _ = signer_seeds; // used above conceptually; vault is a PDA
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.sol_vault.to_account_info(),
+                    to: ctx.accounts.user.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            sol_out,
+        )?;
 
         // Update reserves
         token_state.virtual_sol_reserve -= sol_out;
@@ -311,9 +343,21 @@ pub mod higher_launchpad {
         let platform_fee = (token_state.real_sol_reserve as u128 * PLATFORM_FEE_BPS as u128 / 10_000) as u64;
         let sol_for_pool = token_state.real_sol_reserve - platform_fee;
 
-        // Transfer platform fee
-        **ctx.accounts.sol_vault.to_account_info().try_borrow_mut_lamports()? -= platform_fee;
-        **ctx.accounts.platform_fee_recipient.to_account_info().try_borrow_mut_lamports()? += platform_fee;
+        // Transfer platform fee via PDA-signed CPI
+        let mint_key = token_state.mint;
+        let vault_seeds = &[b"sol_vault", mint_key.as_ref(), &[token_state.vault_bump]];
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.sol_vault.to_account_info(),
+                    to: ctx.accounts.platform_fee_recipient.to_account_info(),
+                },
+                &[vault_seeds],
+            ),
+            platform_fee,
+        )?;
 
         // Revoke mint authority — permanently locks supply at 10M
         let mint_key = token_state.mint;
@@ -321,7 +365,7 @@ pub mod higher_launchpad {
         let signer_seeds = &[&seeds[..]];
 
         let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.token_program.key(),
             SetAuthority {
                 account_or_mint: ctx.accounts.mint.to_account_info(),
                 current_authority: ctx.accounts.mint_authority.to_account_info(),
@@ -391,10 +435,22 @@ pub mod higher_launchpad {
         let amount = token_state.creator_fees_accumulated;
         token_state.creator_fees_accumulated = 0;
 
-        // Transfer from fee escrow to claimer
+        // Transfer from fee escrow to claimer via PDA-signed CPI
         // In production: CPI to Omnipair's claim instruction
-        **ctx.accounts.fee_escrow.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.claimer.to_account_info().try_borrow_mut_lamports()? += amount;
+        let mint_key = token_state.mint;
+        let escrow_seeds = &[b"fee_escrow", mint_key.as_ref(), &[ctx.bumps.fee_escrow]];
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.fee_escrow.to_account_info(),
+                    to: ctx.accounts.claimer.to_account_info(),
+                },
+                &[escrow_seeds],
+            ),
+            amount,
+        )?;
 
         emit!(FeesClaimed {
             mint: token_state.mint,
@@ -565,6 +621,14 @@ pub struct Trade<'info> {
 
     #[account(mut)]
     pub user: Signer<'info>,
+
+    /// Fee escrow PDA — receives creator fees during buy
+    #[account(
+        mut,
+        seeds = [b"fee_escrow", token_state.mint.as_ref()],
+        bump
+    )]
+    pub fee_escrow: SystemAccount<'info>,
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,

@@ -1,15 +1,15 @@
 [toolchain]
-anchor_version = "0.31.0"
+anchor_version = "1.0.0"
 
 [features]
 resolution = true
 skip-lint = false
 
 [programs.devnet]
-higher_launchpad = "HiGHrLaunchPadXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+higher_launchpad = "72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv"
 
 [programs.localnet]
-higher_launchpad = "HiGHrLaunchPadXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+higher_launchpad = "72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv"
 
 [registry]
 url = "https://api.apr.dev"
