@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Sparkles, TrendingUp, CheckCircle2, Users, Globe, Bird } from "lucide-react";
+import { Sparkles, TrendingUp, CheckCircle2, Users, Globe, Bird, Search } from "lucide-react";
 import { MOCK_TOKENS } from "@/lib/mockData";
 import { formatUSD, formatNumber, shortenAddress, timeAgo } from "@/lib/utils";
 import { Token } from "@/types";
@@ -94,26 +94,43 @@ function KanbanColumn({
 }
 
 export default function LaunchesPage() {
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(
+    () => MOCK_TOKENS.filter(t =>
+      t.name.toLowerCase().includes(query.toLowerCase()) ||
+      t.ticker.toLowerCase().includes(query.toLowerCase())
+    ),
+    [query]
+  );
+
   const inception = useMemo(
-    () => MOCK_TOKENS.filter(t => t.phase === "bonding" && t.marketCap < 10000),
-    []
+    () => filtered.filter(t => t.phase === "bonding" && t.marketCap < 10000),
+    [filtered]
   );
   const interest = useMemo(
-    () => MOCK_TOKENS.filter(t => t.phase === "bonding" && t.marketCap >= 10000),
-    []
+    () => filtered.filter(t => t.phase === "bonding" && t.marketCap >= 10000),
+    [filtered]
   );
   const migrated = useMemo(
-    () => MOCK_TOKENS.filter(t => t.phase === "graduated"),
-    []
+    () => filtered.filter(t => t.phase === "graduated"),
+    [filtered]
   );
 
   return (
     <div className="px-6 py-8">
       <div className="max-w-5xl mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-xl font-bold text-gray-900">Explore</h1>
-            <p className="text-sm text-gray-400 mt-0.5">{MOCK_TOKENS.length} projects launched</p>
+          <h1 className="text-xl font-bold text-gray-900">Explore</h1>
+          <div className="relative">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search tokens..."
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              className="pl-8 pr-4 py-2 text-sm bg-white rounded-lg border border-gray-200 text-gray-900 placeholder-gray-400 focus:outline-none focus:border-gray-300 w-52"
+            />
           </div>
         </div>
 

@@ -4,16 +4,17 @@ import Link from "next/link";
 import Image from "next/image";
 import { ArrowUpRight } from "lucide-react";
 import { MOCK_TOKENS } from "@/lib/mockData";
-import TokenCard from "@/components/ui/TokenCard";
 import GlassButton from "@/components/ui/GlassButton";
+import HowItWorks from "@/components/ui/HowItWorks";
+import AfterGraduation from "@/components/ui/AfterGraduation";
+import { formatUSD, calcBondingCurveProgress, timeAgo } from "@/lib/utils";
 
 export default function HomePage() {
-  const graduated = MOCK_TOKENS.filter(t => t.phase === "graduated");
 
   return (
     <div>
       {/* Hero */}
-      <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)] text-center px-8 pb-8 pt-4">
+      <div className="flex flex-col items-center justify-center min-h-[calc(100vh-320px)] text-center px-8">
         <div className="flex items-center gap-2.5 mb-8 animate-[fadeSlideUp_0.6s_ease_forwards]">
           <img
             src="/omnipairlogo.svg"
@@ -33,11 +34,93 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* ALL LAUNCHES */}
+      <div className="w-full max-w-[1400px] mx-auto px-10 -mt-8 mb-24">
+        <section>
+          <div className="flex items-center justify-between mb-5">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">All Launches</p>
+            <Link href="/launches" className="text-sm font-medium text-gray-900 transition-colors hover:text-gray-600">
+              See all →
+            </Link>
+          </div>
+
+          <div className="rounded-2xl overflow-hidden bg-white shadow-sm" style={{ fontFamily: "'OpenRunde', sans-serif" }}>
+            {/* Table header */}
+            <div className="grid grid-cols-[3rem_2fr_1fr_1fr_1fr_1fr_1fr] px-6 py-3.5 border-b border-gray-100">
+              {["#", "Name", "Market Cap", "24H Vol", "Price", "Creator Fees", "Total Debt"].map((h, idx) => (
+                <span key={h} className={`text-[13px] font-semibold text-gray-400 ${idx > 1 ? "text-right" : ""}`}>{h}</span>
+              ))}
+            </div>
+
+            {/* Table rows */}
+            {MOCK_TOKENS.map((token, i) => {
+              const graduated = token.phase === "graduated";
+              const progress = calcBondingCurveProgress(token.solRaised, token.targetSOL);
+              const solPrice = 148;
+              return (
+                <Link key={token.id} href={`/token/${token.id}`}>
+                  <div className="grid grid-cols-[3rem_2fr_1fr_1fr_1fr_1fr_1fr] px-6 py-4 border-b border-gray-50 last:border-0 hover:bg-gray-50/70 transition-colors items-center cursor-pointer">
+                    <span className="text-[14px] text-gray-400 tabular-nums">{i + 1}</span>
+
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <div className="relative w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 bg-gray-100">
+                        <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[14px] font-semibold text-gray-900 truncate leading-tight">{token.name}</span>
+                          <span className="text-[14px] text-gray-400 flex-shrink-0">${token.ticker}</span>
+                          {graduated && (
+                            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded flex-shrink-0 bg-gray-100 text-gray-500">Grad</span>
+                          )}
+                        </div>
+                        {!graduated ? (
+                          <div className="flex items-center gap-2">
+                            <div className="w-20 h-1 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full bg-gray-400" style={{ width: `${progress}%` }} />
+                            </div>
+                            <span className="text-[13px] text-gray-400 tabular-nums">{progress.toFixed(0)}%</span>
+                          </div>
+                        ) : (
+                          <span className="text-[13px] text-gray-400">{timeAgo(token.createdAt)}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <span className="text-[14px] font-semibold text-gray-900 text-right tabular-nums">{formatUSD(token.marketCap)}</span>
+
+                    <span className="text-[14px] text-gray-500 text-right tabular-nums">
+                      {graduated && token.volume24h ? formatUSD(token.volume24h) : <span className="text-gray-300">—</span>}
+                    </span>
+
+                    <span className="text-[14px] text-gray-900 text-right tabular-nums">{token.currentPrice.toFixed(7)}</span>
+
+                    <span className="text-[14px] text-gray-900 text-right tabular-nums">
+                      {token.creatorFeesEarned ? formatUSD(token.creatorFeesEarned * solPrice) : <span className="text-gray-300">—</span>}
+                    </span>
+
+                    <span className="text-[14px] text-gray-500 text-right tabular-nums">
+                      {token.lpFeesEarned ? formatUSD(token.lpFeesEarned * solPrice) : <span className="text-gray-300">—</span>}
+                    </span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+
       {/* Content */}
       <div className="max-w-2xl mx-auto px-8 pb-24">
 
+        {/* HOW IT WORKS */}
+        <HowItWorks />
+
+        {/* AFTER GRADUATION */}
+        <AfterGraduation />
+
         {/* RECENT WRITING */}
-        <section className="mb-16">
+        <section>
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Recent Writing</p>
           <Link href="/writing">
             <div className="rounded-lg overflow-hidden bg-white hover:shadow-md transition-shadow cursor-pointer">
@@ -52,8 +135,7 @@ export default function HomePage() {
                   <ArrowUpRight size={16} className="text-gray-400 flex-shrink-0 mt-0.5" />
                 </div>
                 <p className="text-sm text-gray-500 italic leading-relaxed mb-4">
-                  "The system trains you to behave this way. Conviction is punished. Speed is rewarded.
-                  Average hold time is approx. 58 seconds."
+                  "Higher.run changes the structure entirely. Instead of forcing traders to move faster, it creates markets where conviction can actually survive."
                 </p>
                 <p className="text-xs text-gray-400">
                   higher.run Research&nbsp;/&nbsp;Protocol Overview&nbsp;/&nbsp;Apr 2026
@@ -63,113 +145,6 @@ export default function HomePage() {
           </Link>
         </section>
 
-        {/* HOW IT WORKS */}
-        <section className="mb-16">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-5">How It Works</p>
-          <div className="space-y-3">
-            {[
-              { n: "1", label: "Launch", desc: "Deploy a token with fixed 10M supply. Mint authority revoked on graduation." },
-              { n: "2", label: "Fund", desc: "Community contributes SOL on a bonding curve. Fair launch, no presale." },
-              { n: "3", label: "Graduate", desc: "Auto-migrates to an Omnipair GAMM pool with full capital markets utility." },
-              { n: "4", label: "Earn", desc: "Collect 0.5% perpetual royalties on every swap. Forever." },
-            ].map(({ n, label, desc }) => (
-              <div key={n} className="rounded-lg px-6 py-4 bg-white">
-                <span className="text-sm text-gray-400 mr-3">{n}</span>
-                <span className="text-sm font-semibold text-gray-900">{label}</span>
-                <span className="text-sm text-gray-500 ml-2">{desc}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* AFTER GRADUATION */}
-        <section className="mb-16">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">After Graduation</p>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Every token becomes a capital markets instrument.</h2>
-          <p className="text-sm text-gray-400 mb-6 max-w-xl">
-            Once the bonding curve target is reached, your token auto-migrates into an Omnipair GAMM pool — a unified liquidity layer that unlocks institutional-grade DeFi primitives instantly.
-          </p>
-          <div className="space-y-3">
-            {[
-              { title: "Spot Trading", desc: "Deep on-chain liquidity. Instant execution. No orderbook required." },
-              { title: "Borrow Against Your Tokens", desc: "Deposit your tokens as collateral and borrow SOL or USDC directly from the GAMM pool. Access liquidity without selling a single token." },
-              { title: "Leveraged Long Positions", desc: "Amplify exposure through recursive borrowing — 2x, 3x, or higher — all within the same pool. No external margin protocol." },
-              { title: "Short Selling", desc: "Take the other side. Borrow the token, sell into the pool, and profit from downside. Full short capability, natively." },
-              { title: "Supply Liquidity & Earn Yield", desc: "Provide capital to the pool. Earn swap fees, lending interest, and creator royalty distributions. Passive, composable yield." },
-            ].map(({ title, desc }) => (
-              <div key={title} className="rounded-lg px-6 py-5 bg-white hover:shadow-sm transition-shadow">
-                <h3 className="text-sm font-semibold text-gray-900 mb-1">{title}</h3>
-                <p className="text-sm text-gray-400 leading-relaxed">{desc}</p>
-              </div>
-            ))}
-          </div>
-          <p className="text-xs text-gray-400 mt-5">
-            One unified pool per token. Isolated risk. Capital efficient. No oracles. No fragmentation.
-          </p>
-        </section>
-
-        {/* GRADUATED TOKENS */}
-        {graduated.length > 0 && (
-          <section className="mb-16">
-            <div className="flex items-center justify-between mb-5">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Graduated Tokens</p>
-              <span className="text-xs text-gray-400">{graduated.length} complete</span>
-            </div>
-            <div className="grid sm:grid-cols-2 gap-4">
-              {graduated.map(token => (
-                <Link key={token.id} href={`/token/${token.id}`}>
-                  <div className="rounded-lg p-5 bg-white hover:shadow-sm transition-shadow">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="relative w-10 h-10 rounded-md overflow-hidden bg-gray-100 flex-shrink-0">
-                        <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-semibold text-sm text-gray-900 truncate">{token.name}</p>
-                        <p className="text-xs text-gray-400">${token.ticker}</p>
-                      </div>
-                      <div className="ml-auto text-[10px] font-semibold px-2 py-0.5 rounded uppercase" style={{ background: "rgba(175,145,90,0.12)", color: "#8a7050" }}>
-                        Raised
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-y-2 text-xs">
-                      <div>
-                        <span className="text-gray-400">Raised</span>
-                        <p className="font-semibold text-gray-900">{token.solRaised} SOL</p>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-gray-400">Target</span>
-                        <p className="font-semibold text-gray-900">{token.targetSOL} SOL</p>
-                      </div>
-                      <div>
-                        <span className="text-gray-400">Price</span>
-                        <p className="font-semibold text-gray-900">{token.currentPrice.toFixed(7)}</p>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-gray-400">Creator Earned</span>
-                        <p className="font-semibold" style={{ color: "#8a7050" }}>{token.creatorFeesEarned?.toFixed(3)} SOL</p>
-                      </div>
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* ALL LAUNCHES */}
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">All Launches</p>
-            <Link href="/launches" className="text-sm font-medium transition-colors" style={{ color: "#8a7050" }}>
-              See all →
-            </Link>
-          </div>
-          <div className="rounded-lg overflow-hidden bg-white">
-            {MOCK_TOKENS.map(token => (
-              <TokenCard key={token.id} token={token} variant="list" />
-            ))}
-          </div>
-        </section>
       </div>
     </div>
   );
