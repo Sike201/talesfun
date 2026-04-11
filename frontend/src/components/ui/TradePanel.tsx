@@ -4,8 +4,11 @@ import { useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { ArrowDownUp } from "lucide-react";
+import { PublicKey } from "@solana/web3.js";
+import { BN } from "@coral-xyz/anchor";
 import { Token } from "@/types";
 import { cn } from "@/lib/utils";
+import { useProgram } from "@/hooks/useProgram";
 import toast from "react-hot-toast";
 
 interface Props {
@@ -14,6 +17,7 @@ interface Props {
 
 export default function TradePanel({ token }: Props) {
   const { connected } = useWallet();
+  const program = useProgram();
   const [mode, setMode] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
@@ -22,13 +26,51 @@ export default function TradePanel({ token }: Props) {
   const estimatedTokens = solAmount > 0 ? Math.floor(solAmount / token.currentPrice) : 0;
 
   const handleTrade = async () => {
-    if (!connected) return;
+    if (!connected || !program) {
+      toast.error("Connect your wallet to trade");
+      return;
+    }
     if (!amount || solAmount <= 0) { toast.error("Enter an amount"); return; }
+
     setLoading(true);
-    await new Promise(r => setTimeout(r, 1500));
-    toast.success(mode === "buy" ? `Bought ${estimatedTokens.toLocaleString()} ${token.ticker}` : `Sold ${amount} ${token.ticker}`);
-    setAmount("");
-    setLoading(false);
+    try {
+      const mint = new PublicKey(token.mint);
+
+      if (mode === "buy") {
+        const solLamports = new BN(Math.floor(solAmount * 1e9));
+        const minTokensOut = new BN(Math.floor(estimatedTokens * 0.99 * 1e6));
+
+        console.log("[higher.run] buy:", { sol: solAmount, lamports: solLamports.toString(), mint: token.mint });
+        const tx = await program.methods
+          .buy(solLamports, minTokensOut)
+          .accountsPartial({ mint })
+          .rpc();
+
+        console.log("[higher.run] buy TX confirmed:", tx);
+        toast.success(`Bought ${token.ticker}! TX: ${tx.slice(0, 8)}...`);
+      } else {
+        const tokenRaw = new BN(Math.floor(solAmount * 1e6));
+        const estSol = solAmount * token.currentPrice;
+        const minSolOut = new BN(Math.floor(estSol * 0.99 * 1e9));
+
+        console.log("[higher.run] sell:", { tokens: solAmount, raw: tokenRaw.toString(), mint: token.mint });
+        const tx = await program.methods
+          .sell(tokenRaw, minSolOut)
+          .accountsPartial({ mint })
+          .rpc();
+
+        console.log("[higher.run] sell TX confirmed:", tx);
+        toast.success(`Sold ${token.ticker}! TX: ${tx.slice(0, 8)}...`);
+      }
+
+      setAmount("");
+    } catch (error) {
+      console.error("[higher.run] Trade failed:", error);
+      const msg = error instanceof Error ? error.message : "Trade failed";
+      toast.error(msg.length > 120 ? msg.slice(0, 120) + "..." : msg);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const quickAmounts = mode === "buy" ? ["0.1", "0.5", "1", "5"] : ["25%", "50%", "75%", "100%"];

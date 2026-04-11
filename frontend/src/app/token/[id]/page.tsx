@@ -1,14 +1,18 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useEffect } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { useConnection } from "@solana/wallet-adapter-react";
+import { PublicKey } from "@solana/web3.js";
 import { MOCK_TOKENS, MOCK_TRADES } from "@/lib/mockData";
 import {
   formatUSD, formatNumber, shortenAddress, timeAgo, calcBondingCurveProgress
 } from "@/lib/utils";
+import { getReadOnlyProgram, getTokenStatePDA, tokenStateToToken } from "@/lib/program";
 import TradePanel from "@/components/ui/TradePanel";
 import TradingInterface from "@/components/ui/TradingInterface";
+import { Token, Trade } from "@/types";
 import {
   ExternalLink, Copy, CheckCircle2, ArrowUpRight
 } from "lucide-react";
@@ -17,9 +21,45 @@ import { cn } from "@/lib/utils";
 
 export default function TokenPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const token = MOCK_TOKENS.find(t => t.id === id) ?? MOCK_TOKENS[0];
-  const trades = MOCK_TRADES.filter(t => t.tokenMint === token.mint);
+  const { connection } = useConnection();
+  const [token, setToken] = useState<Token | null>(null);
+  const [trades, setTrades] = useState<Trade[]>([]);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      // Try on-chain fetch if id looks like a Solana pubkey
+      try {
+        const mint = new PublicKey(id);
+        const program = getReadOnlyProgram(connection);
+        const [pda] = getTokenStatePDA(mint);
+        const state = await (program.account as any).tokenState.fetch(pda);
+        if (!cancelled) {
+          setToken(tokenStateToToken(state, id));
+          setTrades([]); // trades come from indexer later
+        }
+        return;
+      } catch {
+        // Not a valid pubkey or account doesn't exist — fall back to mock
+      }
+      if (!cancelled) {
+        const mock = MOCK_TOKENS.find(t => t.id === id || t.mint === id) ?? MOCK_TOKENS[0];
+        setToken(mock);
+        setTrades(MOCK_TRADES.filter(t => t.tokenMint === mock.mint));
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [id, connection]);
+
+  if (!token) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <p className="text-sm text-gray-400 animate-pulse">Loading token...</p>
+      </div>
+    );
+  }
 
   const progress = calcBondingCurveProgress(token.solRaised, token.targetSOL);
   const graduated = token.phase === "graduated";

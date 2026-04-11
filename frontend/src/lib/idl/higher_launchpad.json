@@ -1,10 +1,10 @@
 {
-  "address": "DYJsBMJEnDrU2ZL825wpu95CYHTY1zv875TvFfz64sBo",
+  "address": "72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv",
   "metadata": {
     "name": "higher_launchpad",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Higher.run — Creator-first bonding curve launchpad with Omnipair GAMM graduation"
+    "description": "Higher.run \u2014 Creator-first bonding curve launchpad with Omnipair GAMM graduation"
   },
   "instructions": [
     {
@@ -273,7 +273,7 @@
         {
           "name": "fee_escrow",
           "docs": [
-            "Fee escrow PDA — receives creator fees during buy"
+            "Fee escrow PDA \u2014 receives creator fees during buy"
           ],
           "writable": true,
           "pda": {
@@ -731,7 +731,7 @@
         {
           "name": "mint_authority",
           "docs": [
-            "PDA holding mint authority — will be stripped of authority"
+            "PDA holding mint authority \u2014 will be stripped of authority"
           ],
           "writable": true,
           "pda": {
@@ -1245,7 +1245,7 @@
         {
           "name": "fee_escrow",
           "docs": [
-            "Fee escrow PDA — receives creator fees during buy"
+            "Fee escrow PDA \u2014 receives creator fees during buy"
           ],
           "writable": true,
           "pda": {

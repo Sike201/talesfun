@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { useState, useEffect } from "react";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { PublicKey } from "@solana/web3.js";
 import Link from "next/link";
 import Image from "next/image";
 import {
@@ -10,26 +11,69 @@ import {
   Zap, Copy, Share2
 } from "lucide-react";
 import { MOCK_TOKENS } from "@/lib/mockData";
+import { Token } from "@/types";
 import { formatUSD, shortenAddress, timeAgo, calcBondingCurveProgress } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { useProgram } from "@/hooks/useProgram";
+import { getReadOnlyProgram, tokenStateToToken } from "@/lib/program";
 import toast from "react-hot-toast";
 
 export default function DashboardPage() {
   const { connected, publicKey } = useWallet();
+  const { connection } = useConnection();
+  const program = useProgram();
   const [claiming, setClaiming] = useState<string | null>(null);
   const [tab, setTab] = useState<"all" | "graduated" | "active">("all");
+  const [onChainTokens, setOnChainTokens] = useState<Token[] | null>(null);
 
-  const myTokens = MOCK_TOKENS.filter(t => t.phase === "graduated" || t.solRaised > 10);
+  // Fetch tokens created by this wallet from chain
+  useEffect(() => {
+    if (!publicKey || !connection) return;
+    let cancelled = false;
+    async function fetchMyTokens() {
+      try {
+        const ro = getReadOnlyProgram(connection);
+        const all = await (ro.account as any).tokenState.all();
+        const mine = all
+          .filter((a: { account: { creator: PublicKey } }) => a.account.creator.equals(publicKey!))
+          .map((a: { publicKey: PublicKey; account: unknown }) => tokenStateToToken(a.account, a.account && typeof a.account === 'object' && 'mint' in a.account ? (a.account as { mint: PublicKey }).mint.toBase58() : a.publicKey.toBase58()));
+        if (!cancelled) setOnChainTokens(mine);
+      } catch {
+        // Chain fetch failed — will fall back to mock
+      }
+    }
+    fetchMyTokens();
+    return () => { cancelled = true; };
+  }, [publicKey, connection]);
+
+  const myTokens = onChainTokens ?? MOCK_TOKENS.filter(t => t.phase === "graduated" || t.solRaised > 10);
 
   const totalClaimable = myTokens
     .filter(t => t.phase === "graduated")
     .reduce((sum, t) => sum + (t.creatorFeesEarned ?? 0), 0);
 
-  const handleClaim = async (tokenId: string, tokenName: string) => {
-    setClaiming(tokenId);
-    await new Promise(r => setTimeout(r, 1800));
-    setClaiming(null);
-    toast.success(`Claimed royalties from ${tokenName}`);
+  const handleClaim = async (mintAddress: string, tokenName: string) => {
+    if (!program) {
+      toast.error("Connect your wallet to claim");
+      return;
+    }
+    setClaiming(mintAddress);
+    try {
+      const mint = new PublicKey(mintAddress);
+      console.log("[higher.run] claimCreatorFees for mint:", mintAddress);
+      const tx = await program.methods
+        .claimCreatorFees()
+        .accountsPartial({ mint })
+        .rpc();
+      console.log("[higher.run] claimCreatorFees TX confirmed:", tx);
+      toast.success(`Claimed royalties from ${tokenName}! TX: ${tx.slice(0, 8)}...`);
+    } catch (error) {
+      console.error("[higher.run] Claim failed:", error);
+      const msg = error instanceof Error ? error.message : "Claim failed";
+      toast.error(msg.length > 120 ? msg.slice(0, 120) + "..." : msg);
+    } finally {
+      setClaiming(null);
+    }
   };
 
   const copyLink = () => {
@@ -193,16 +237,16 @@ export default function DashboardPage() {
                   <div className="flex gap-1.5">
                     {grad && (
                       <button
-                        onClick={() => handleClaim(token.id, token.name)}
-                        disabled={claiming === token.id}
+                        onClick={() => handleClaim(token.mint, token.name)}
+                        disabled={claiming === token.mint}
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
                         style={{ background: "linear-gradient(-75deg, rgba(255,255,255,0.9), rgba(175,145,90,0.12), rgba(255,255,255,0.85))", boxShadow: "0 1px 4px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(175,145,90,0.18)", color: "#8a7050" }}
                       >
-                        {claiming === token.id ? "..." : "Claim"}
+                        {claiming === token.mint ? "..." : "Claim"}
                       </button>
                     )}
                     <Link
-                      href={`/token/${token.id}`}
+                      href={`/token/${token.mint}`}
                       className="border border-gray-200 text-gray-400 hover:text-gray-600 px-2 py-1.5 rounded-lg transition-colors"
                     >
                       <ExternalLink size={12} />

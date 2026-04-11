@@ -48,9 +48,9 @@ export interface CreatorStats {
   trades: Trade[];
 }
 
-export const FIXED_SUPPLY = 10_000_000;
+export const FIXED_SUPPLY = 1_000_000_000;
 export const GRADUATION_SOL = 85;
 export const CREATOR_FEE_BPS = 50;
 export const LP_FEE_BPS = 50;
 export const TOTAL_FEE_BPS = 100;
-export const PROGRAM_ID = "HiGHr1aunchPadProgramIDxxxxxxxxxxxxxxxxxx";
+export const PROGRAM_ID = "72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv";
