@@ -47,13 +47,13 @@ export default function HomePage() {
               <div className="px-6 py-5">
                 <div className="flex items-start justify-between gap-4 mb-2">
                   <h2 className="text-base font-bold text-gray-900 leading-snug">
-                    The Higher.run Protocol: On-Chain Capital Markets for Every Token
+                    Solana's Memecoin Economy Isn't Broken. It's Working Exactly As Designed.
                   </h2>
                   <ArrowUpRight size={16} className="text-gray-400 flex-shrink-0 mt-0.5" />
                 </div>
                 <p className="text-sm text-gray-500 italic leading-relaxed mb-4">
-                  "A token that can be borrowed against, leveraged, and shorted on day one is no longer
-                  just a speculative asset — it's a financial instrument."
+                  "The system trains you to behave this way. Conviction is punished. Speed is rewarded.
+                  Average hold time is approx. 58 seconds."
                 </p>
                 <p className="text-xs text-gray-400">
                   higher.run Research&nbsp;/&nbsp;Protocol Overview&nbsp;/&nbsp;Apr 2026
