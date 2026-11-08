@@ -23,6 +23,7 @@ describe("higher-launchpad", () => {
   const mintKeypair = Keypair.generate();
 
   let platformPda: PublicKey;
+  let platformFeeRecipient: PublicKey;
   let tokenStatePda: PublicKey;
   let mintAuthorityPda: PublicKey;
   let solVaultPda: PublicKey;
@@ -53,7 +54,7 @@ describe("higher-launchpad", () => {
   });
 
   it("Initializes the platform", async () => {
-    const platformFeeRecipient = Keypair.generate().publicKey;
+    platformFeeRecipient = Keypair.generate().publicKey;
 
     await program.methods
       .initializePlatform(platformFeeRecipient)
@@ -119,6 +120,10 @@ describe("higher-launchpad", () => {
       mintKeypair.publicKey,
       buyer.publicKey
     );
+    const [feeEscrow] = PublicKey.findProgramAddressSync(
+      [Buffer.from("fee_escrow"), mintKeypair.publicKey.toBuffer()],
+      program.programId
+    );
 
     const solBefore = await provider.connection.getBalance(buyer.publicKey);
 
@@ -134,6 +139,11 @@ describe("higher-launchpad", () => {
         tokenVault: tokenVaultAta,
         userTokenAccount: buyerAta,
         user: buyer.publicKey,
+        feeEscrow,
+        mintAuthority: mintAuthorityPda,
+        platform: platformPda,
+        platformFeeRecipient,
+        gammPoolPlaceholder: PublicKey.default,
         systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,

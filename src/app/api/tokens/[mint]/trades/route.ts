@@ -14,7 +14,9 @@ export async function GET(
 
     const { data, error } = await supabase
       .from("trades")
-      .select("*")
+      .select(
+        "id, mint, signature, side, wallet, sol_amount_raw, token_amount_raw, price_sol, timestamp"
+      )
       .eq("mint", mint)
       .order("timestamp", { ascending: false })
       .range(offset, offset + limit - 1);

@@ -14,6 +14,7 @@ interface Props {
 export default function TokenCard({ token, variant = "grid" }: Props) {
   const progress = calcBondingCurveProgress(token.solRaised, token.targetSOL);
   const graduated = token.phase === "graduated";
+  const graduating = token.phase === "ready_to_graduate";
 
   if (variant === "list") {
     return (
@@ -31,15 +32,17 @@ export default function TokenCard({ token, variant = "grid" }: Props) {
           </div>
           <div className="text-right">
             <p className="text-sm font-semibold text-gray-900">{formatUSD(token.marketCap)}</p>
-            {!graduated ? (
+            {graduated ? (
+              <span className="text-[10px] font-medium" style={{ color: "#8a7050" }}>Graduated</span>
+            ) : graduating ? (
+              <span className="text-[10px] font-semibold text-amber-500">Graduating…</span>
+            ) : (
               <div className="flex items-center gap-1.5">
                 <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${progress}%`, background: "rgba(175,145,90,0.45)" }} />
                 </div>
                 <span className="text-[10px] text-gray-400">{progress.toFixed(0)}%</span>
               </div>
-            ) : (
-              <span className="text-[10px] font-medium" style={{ color: "#8a7050" }}>Graduated</span>
             )}
           </div>
         </div>

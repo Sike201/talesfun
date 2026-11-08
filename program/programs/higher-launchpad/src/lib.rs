@@ -10,8 +10,31 @@ use anchor_spl::{
     },
 };
 use anchor_spl::token::spl_token::instruction::AuthorityType;
+use anchor_lang::solana_program::{
+    instruction::Instruction,
+    program::invoke,
+    sysvar::SysvarId,
+};
+
+mod omnipair_cpi;
+
+use omnipair_cpi::{
+    build_omnipair_initialize_ix_data,
+    omnipair_params_hash_matches,
+    OmnipairPoolConfigArgs,
+    OMNIPAIR_INITIALIZE_ACCOUNT_LEN,
+};
 
 declare_id!("72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv");
+
+/// Omnipair GAMM program id (mainnet and devnet — see Omnipair docs).
+/// Omnipair program targeted by `bootstrap_omnipair_pool` CPI.
+/// For self-hosted devnet Omnipair, replace with your deployed program id and redeploy this program.
+/// Must match `NEXT_PUBLIC_OMNIPAIR_PROGRAM_ID` / `OMNIPAIR_PROGRAM_ID` in the frontend.
+pub const OMNIPAIR_PROGRAM_ID: Pubkey = pubkey!("GP5yjX245UK28bLJQgG4WSHGT9ZyeoC6QpgwWAjekWv4");
+
+pub const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+pub const MPL_TOKEN_METADATA_ID: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -20,8 +43,13 @@ pub const FIXED_SUPPLY: u64 = 1_000_000_000_000_000; // 1B * 10^6
 pub const FIXED_SUPPLY_UI: u64 = 1_000_000_000;
 pub const TOKEN_DECIMALS: u8 = 6;
 
-/// Graduation threshold: 85 SOL raised (in lamports)
-pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 85_000_000_000; // 85 SOL
+/// Net SOL into the curve (after creator fee) cumulated in `token_state.sol_raised` before graduation.
+/// Production: **85 SOL** — exhausts ~793.1M bonding tokens (Pump-like completion).
+/// Dev-only: enable Cargo feature `dev-graduation` for **5 SOL** (early graduation ~153M sold; infra/UI tests only).
+#[cfg(feature = "dev-graduation")]
+pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 5_000_000_000;
+#[cfg(not(feature = "dev-graduation"))]
+pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 85_000_000_000;
 
 /// Creator fee: 50 bps = 0.5%
 pub const CREATOR_FEE_BPS: u16 = 50;
@@ -43,6 +71,13 @@ pub const GAMM_POOL_ALLOCATION: u64 = 206_900_000_000_000; // 206.9M * 10^6
 
 /// Platform fee on graduation: 2% of raised SOL
 pub const PLATFORM_FEE_BPS: u16 = 200;
+
+/// `sol_vault` is a 0-byte System-owned PDA; this is its rent-exempt lamport minimum.
+/// Accounting invariant: `sol_vault.lamports() == rent_exempt_min + real_sol_reserve`.
+/// `real_sol_reserve` is **only** tradable liquidity from buys (net of curve fees); it never includes the rent cushion.
+fn sol_vault_rent_exempt_min() -> Result<u64> {
+    Ok(Rent::get()?.minimum_balance(0))
+}
 
 // ─── Program ──────────────────────────────────────────────────────────────────
 
@@ -99,6 +134,7 @@ pub mod higher_launchpad {
         token_state.total_supply = FIXED_SUPPLY;
         token_state.virtual_sol_reserve = 30_000_000_000; // 30 SOL virtual reserve for smooth curve
         token_state.virtual_token_reserve = VIRTUAL_TOKEN_RESERVE_INITIAL;
+        // Tradable SOL only — rent cushion lives in `sol_vault` lamports but is not counted here.
         token_state.real_sol_reserve = 0;
         token_state.real_token_reserve = BONDING_CURVE_ALLOCATION;
         token_state.creator_fees_accumulated = 0;
@@ -106,21 +142,24 @@ pub mod higher_launchpad {
         token_state.bump = ctx.bumps.token_state;
         token_state.vault_bump = ctx.bumps.sol_vault;
 
-        // Mint full supply to bonding curve token vault
-        let cpi_ctx = CpiContext::new(
+        // Signer seeds for mint_authority PDA — shared by both CPIs below
+        let mint_key = ctx.accounts.mint.key();
+        let seeds = &[b"mint_authority", mint_key.as_ref(), &[ctx.bumps.mint_authority]];
+        let signer_seeds = &[&seeds[..]];
+
+        // Mint full supply to bonding curve token vault (mint_authority PDA must sign)
+        let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.key(),
             MintTo {
                 mint: ctx.accounts.mint.to_account_info(),
                 to: ctx.accounts.token_vault.to_account_info(),
                 authority: ctx.accounts.mint_authority.to_account_info(),
             },
+            signer_seeds,
         );
         token::mint_to(cpi_ctx, FIXED_SUPPLY)?;
 
         // Create on-chain metadata via Metaplex
-        let mint_key = ctx.accounts.mint.key();
-        let seeds = &[b"mint_authority", mint_key.as_ref(), &[ctx.bumps.mint_authority]];
-        let signer_seeds = &[&seeds[..]];
 
         create_metadata_accounts_v3(
             CpiContext::new_with_signer(
@@ -251,10 +290,23 @@ pub mod higher_launchpad {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        // Check graduation trigger
+        // Same-transaction graduation when this buy crosses the threshold (no second tx).
         if token_state.sol_raised >= GRADUATION_THRESHOLD_LAMPORTS {
-            token_state.phase = TokenPhase::ReadyToGraduate;
-            emit!(GraduationReady { mint: token_state.mint });
+            let vault_bump = token_state.vault_bump;
+            let platform = &mut ctx.accounts.platform;
+            graduate_token_now(
+                token_state,
+                platform,
+                &ctx.accounts.mint,
+                &ctx.accounts.mint_authority.to_account_info(),
+                &ctx.accounts.sol_vault.to_account_info(),
+                &ctx.accounts.platform_fee_recipient.to_account_info(),
+                &ctx.accounts.gamm_pool_placeholder.to_account_info(),
+                &ctx.accounts.system_program,
+                &ctx.accounts.token_program,
+                ctx.bumps.mint_authority,
+                vault_bump,
+            )?;
         }
 
         Ok(())
@@ -277,6 +329,14 @@ pub mod higher_launchpad {
 
         require!(sol_out >= min_sol_out, LaunchpadError::SlippageExceeded);
         require!(sol_out <= token_state.real_sol_reserve, LaunchpadError::InsufficientLiquidity);
+
+        // Keep `sol_vault` rent-exempt: payout must leave at least the 0-data rent minimum.
+        let rent_min = sol_vault_rent_exempt_min()?;
+        let vault_lamports = ctx.accounts.sol_vault.lamports();
+        let lamports_after = vault_lamports
+            .checked_sub(sol_out)
+            .ok_or(LaunchpadError::MathOverflow)?;
+        require!(lamports_after >= rent_min, LaunchpadError::InsufficientLiquidity);
 
         // Transfer tokens from seller to vault (burn mechanism)
         let cpi_ctx = CpiContext::new(
@@ -328,93 +388,38 @@ pub mod higher_launchpad {
         Ok(())
     }
 
-    /// Graduate the token: revoke mint authority, seed Omnipair GAMM pool.
-    /// Called by anyone once the threshold is reached.
+    /// Graduate the token: revoke mint authority, record GAMM placeholder.
+    /// Normally completes inside `buy` in the same transaction as the threshold-crossing trade.
+    /// Kept for legacy `ReadyToGraduate` accounts and recovery if a client skipped accounts.
     pub fn graduate(ctx: Context<Graduate>) -> Result<()> {
         let token_state = &mut ctx.accounts.token_state;
 
         require!(
+            token_state.phase != TokenPhase::Graduated,
+            LaunchpadError::AlreadyGraduated
+        );
+        require!(
             token_state.phase == TokenPhase::ReadyToGraduate
-                || token_state.sol_raised >= GRADUATION_THRESHOLD_LAMPORTS,
+                || (token_state.phase == TokenPhase::Bonding
+                    && token_state.sol_raised >= GRADUATION_THRESHOLD_LAMPORTS),
             LaunchpadError::NotReadyToGraduate
         );
 
-        // Platform fee (2% of raised SOL)
-        let platform_fee = (token_state.real_sol_reserve as u128 * PLATFORM_FEE_BPS as u128 / 10_000) as u64;
-        let sol_for_pool = token_state.real_sol_reserve - platform_fee;
-
-        // Transfer platform fee via PDA-signed CPI
-        let mint_key = token_state.mint;
-        let vault_seeds = &[b"sol_vault", mint_key.as_ref(), &[token_state.vault_bump]];
-
-        anchor_lang::system_program::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.system_program.key(),
-                anchor_lang::system_program::Transfer {
-                    from: ctx.accounts.sol_vault.to_account_info(),
-                    to: ctx.accounts.platform_fee_recipient.to_account_info(),
-                },
-                &[vault_seeds],
-            ),
-            platform_fee,
-        )?;
-
-        // Revoke mint authority — permanently locks supply at 10M
-        let mint_key = token_state.mint;
-        let seeds = &[b"mint_authority", mint_key.as_ref(), &[ctx.bumps.mint_authority]];
-        let signer_seeds = &[&seeds[..]];
-
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.key(),
-            SetAuthority {
-                account_or_mint: ctx.accounts.mint.to_account_info(),
-                current_authority: ctx.accounts.mint_authority.to_account_info(),
-            },
-            signer_seeds,
-        );
-        token::set_authority(cpi_ctx, AuthorityType::MintTokens, None)?;
-
-        // ── Omnipair GAMM Integration ──────────────────────────────────────────
-        // The Omnipair program is invoked via CPI to:
-        //   1. Initialize a new GAMM pool with the token
-        //   2. Deposit raised SOL + GAMM_POOL_ALLOCATION tokens as initial liquidity
-        //   3. Set 1% swap fee split: 0.5% creator + 0.5% LP
-        //
-        // NOTE: Replace the omnipair_program address with the real deployed address.
-        // Full CPI integration requires the official @omnipair/program-interface IDL.
-        //
-        // Pseudocode for what this call does:
-        //   omnipair::cpi::initialize_pool(
-        //     CpiContext::new(...),
-        //     InitializePoolParams {
-        //       token_mint: ctx.accounts.mint.key(),
-        //       initial_sol: sol_for_pool,
-        //       initial_tokens: GAMM_POOL_ALLOCATION,
-        //       fee_bps: TOTAL_FEE_BPS,               // 100 = 1%
-        //       creator_fee_recipient: token_state.creator_fee_recipient,
-        //       creator_fee_bps: CREATOR_FEE_BPS,     // 50 = 0.5%
-        //     }
-        //   )?;
-        //
-        // For now we record the pool address and mark as graduated.
-        // Hook in your Omnipair CPI here once you have the program interface.
-        // ──────────────────────────────────────────────────────────────────────
-
-        // Record the graduation
-        token_state.phase = TokenPhase::Graduated;
-        token_state.gamm_pool = ctx.accounts.gamm_pool_placeholder.key();
-
+        let vault_bump = token_state.vault_bump;
         let platform = &mut ctx.accounts.platform;
-        platform.total_graduated += 1;
-        platform.total_sol_raised += token_state.sol_raised;
-
-        emit!(TokenGraduated {
-            mint: token_state.mint,
-            creator: token_state.creator,
-            sol_raised: token_state.sol_raised,
-            gamm_pool: token_state.gamm_pool,
-            timestamp: Clock::get()?.unix_timestamp,
-        });
+        graduate_token_now(
+            token_state,
+            platform,
+            &ctx.accounts.mint,
+            &ctx.accounts.mint_authority.to_account_info(),
+            &ctx.accounts.sol_vault.to_account_info(),
+            &ctx.accounts.platform_fee_recipient.to_account_info(),
+            &ctx.accounts.gamm_pool_placeholder.to_account_info(),
+            &ctx.accounts.system_program,
+            &ctx.accounts.token_program,
+            ctx.bumps.mint_authority,
+            vault_bump,
+        )?;
 
         Ok(())
     }
@@ -461,6 +466,260 @@ pub mod higher_launchpad {
 
         Ok(())
     }
+
+    /// After graduation, move `sol_vault` SOL + a **calculated** slice of `token_vault` into the
+    /// `deployer` WSOL / token ATAs, then CPI Omnipair `initialize`. On success, sets
+    /// `token_state.gamm_pool` to the new pair PDA.
+    ///
+    /// **Pump-style pricing (vs old behavior):** Previously we moved **all** spendable SOL and **all**
+    /// vault tokens into Omnipair, so the pool ratio was `SOL / full_vault_balance`, which is **far below**
+    /// the terminal bonding-curve spot (virtual_sol/virtual_token) and diluted the post-migration price.
+    /// Now we deposit `spendable_lamports` and exactly `token_amount_for_pool` such that
+    /// `token_amount_for_pool / spendable_lamports ≈ virtual_token_reserve / virtual_sol_reserve`, then
+    /// **burn** the vault remainder so excess supply does not enter the pool.
+    ///
+    /// **Client responsibilities:** append `remaining_accounts` in Omnipair IDL order (25 accounts),
+    /// fund `deployer` with ~0.2 SOL + rent for Omnipair pair creation fee and new accounts, pass an
+    /// empty `lp_mint` account (82 bytes, uninitialized), and use canonical mint order `token0 < token1`.
+    pub fn bootstrap_omnipair_pool(
+        ctx: Context<BootstrapOmnipairPool>,
+        config: OmnipairPoolConfigArgs,
+    ) -> Result<()> {
+        let token_state = &mut ctx.accounts.token_state;
+        require!(
+            token_state.phase == TokenPhase::Graduated,
+            LaunchpadError::NotGraduated
+        );
+        require_keys_eq!(
+            token_state.gamm_pool,
+            Pubkey::default(),
+            LaunchpadError::GammPoolAlreadyLinked
+        );
+        require_keys_eq!(token_state.mint, ctx.accounts.mint.key(), LaunchpadError::InvalidMint);
+        require!(
+            omnipair_params_hash_matches(&config),
+            LaunchpadError::InvalidOmnipairParamsHash
+        );
+        require!(config.lp_uri.starts_with("http"), LaunchpadError::InvalidLpUri);
+        require!(config.lp_name.len() <= 32, LaunchpadError::InvalidLpName);
+        require!(config.lp_symbol.len() <= 10, LaunchpadError::InvalidLpSymbol);
+
+        let rem = ctx.remaining_accounts;
+        require!(
+            rem.len() == OMNIPAIR_INITIALIZE_ACCOUNT_LEN,
+            LaunchpadError::OmnipairAccountCount
+        );
+
+        require_keys_eq!(rem[0].key(), ctx.accounts.deployer.key(), LaunchpadError::OmnipairAccounts);
+        let token0 = rem[1].key();
+        let token1 = rem[2].key();
+        require!(token0 < token1, LaunchpadError::OmnipairTokenOrder);
+
+        let wsol = anchor_spl::token::spl_token::native_mint::ID;
+        require!(
+            (token0 == wsol && token1 == ctx.accounts.mint.key())
+                || (token0 == ctx.accounts.mint.key() && token1 == wsol),
+            LaunchpadError::OmnipairMintMismatch
+        );
+
+        let (expected_pair, _) = Pubkey::find_program_address(
+            &[b"gamm_pair", token0.as_ref(), token1.as_ref(), config.params_hash.as_ref()],
+            &OMNIPAIR_PROGRAM_ID,
+        );
+        require_keys_eq!(rem[3].key(), expected_pair, LaunchpadError::OmnipairInvalidPair);
+
+        let (expected_fa, _) =
+            Pubkey::find_program_address(&[b"futarchy_authority"], &OMNIPAIR_PROGRAM_ID);
+        require_keys_eq!(rem[4].key(), expected_fa, LaunchpadError::OmnipairInvalidFutarchy);
+
+        let (expected_ea, _) =
+            Pubkey::find_program_address(&[b"__event_authority"], &OMNIPAIR_PROGRAM_ID);
+        require_keys_eq!(rem[23].key(), expected_ea, LaunchpadError::OmnipairInvalidEventAuthority);
+        require_keys_eq!(rem[24].key(), OMNIPAIR_PROGRAM_ID, LaunchpadError::OmnipairInvalidProgram);
+
+        require_keys_eq!(rem[17].key(), System::id(), LaunchpadError::OmnipairAccounts);
+        require_keys_eq!(rem[18].key(), Token::id(), LaunchpadError::OmnipairAccounts);
+        require_keys_eq!(rem[19].key(), TOKEN_2022_PROGRAM_ID, LaunchpadError::OmnipairAccounts);
+        require_keys_eq!(rem[20].key(), MPL_TOKEN_METADATA_ID, LaunchpadError::OmnipairAccounts);
+        require_keys_eq!(
+            rem[21].key(),
+            anchor_spl::associated_token::ID,
+            LaunchpadError::OmnipairAccounts
+        );
+        require_keys_eq!(rem[22].key(), Rent::id(), LaunchpadError::OmnipairAccounts);
+
+        let expected_dt0 =
+            anchor_spl::associated_token::get_associated_token_address(&rem[0].key(), &token0);
+        let expected_dt1 =
+            anchor_spl::associated_token::get_associated_token_address(&rem[0].key(), &token1);
+        require_keys_eq!(rem[13].key(), expected_dt0, LaunchpadError::OmnipairDeployerAtas);
+        require_keys_eq!(rem[14].key(), expected_dt1, LaunchpadError::OmnipairDeployerAtas);
+
+        let deployer_pk = ctx.accounts.deployer.key();
+        let expected_wsol_ata =
+            anchor_spl::associated_token::get_associated_token_address(&deployer_pk, &wsol);
+        let expected_project_ata =
+            anchor_spl::associated_token::get_associated_token_address(&deployer_pk, &ctx.accounts.mint.key());
+        require_keys_eq!(
+            ctx.accounts.deployer_wsol.key(),
+            expected_wsol_ata,
+            LaunchpadError::OmnipairDeployerAtas
+        );
+        require_keys_eq!(
+            ctx.accounts.deployer_token.key(),
+            expected_project_ata,
+            LaunchpadError::OmnipairDeployerAtas
+        );
+
+        let rent_min = sol_vault_rent_exempt_min()?;
+        let vault_lamports = ctx.accounts.sol_vault.lamports();
+        let spendable_lamports = vault_lamports
+            .checked_sub(rent_min)
+            .ok_or(LaunchpadError::MathOverflow)?;
+
+        let v_sol = token_state.virtual_sol_reserve;
+        let v_token = token_state.virtual_token_reserve;
+        let initial_vault_tokens = ctx.accounts.token_vault.amount;
+
+        require!(spendable_lamports > 0, LaunchpadError::InsufficientLiquidity);
+        require!(initial_vault_tokens > 0, LaunchpadError::InsufficientLiquidity);
+        require!(v_sol > 0 && v_token > 0, LaunchpadError::MathOverflow);
+
+        // Terminal bonding spot (raw): virtual_token / virtual_sol → pool token amount for this SOL.
+        let token_amount_for_pool =
+            token_amount_for_omnipair_at_terminal_price(spendable_lamports, v_sol, v_token)?;
+        require!(token_amount_for_pool > 0, LaunchpadError::InsufficientLiquidity);
+        require!(
+            token_amount_for_pool <= initial_vault_tokens,
+            LaunchpadError::BootstrapPoolTokenMismatch
+        );
+
+        let leftover_burn = initial_vault_tokens
+            .checked_sub(token_amount_for_pool)
+            .ok_or(LaunchpadError::MathOverflow)?;
+
+        msg!(
+            "bootstrap_omnipair_pool: spendable_lamports={} token_for_pool={} vault_before={} leftover_burn={} v_sol={} v_token={}",
+            spendable_lamports,
+            token_amount_for_pool,
+            initial_vault_tokens,
+            leftover_burn,
+            v_sol,
+            v_token
+        );
+
+        let (amount0_in, amount1_in) = if token0 == wsol {
+            (spendable_lamports, token_amount_for_pool)
+        } else {
+            (token_amount_for_pool, spendable_lamports)
+        };
+
+        let mint_key = token_state.mint;
+        let vault_seeds: &[&[u8]] = &[b"sol_vault", mint_key.as_ref(), &[token_state.vault_bump]];
+        let signer_seeds: &[&[&[u8]]] = &[vault_seeds];
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.sol_vault.to_account_info(),
+                    to: ctx.accounts.deployer_wsol.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            spendable_lamports,
+        )?;
+
+        let sync_ix = anchor_spl::token::spl_token::instruction::sync_native(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.deployer_wsol.key(),
+        )?;
+        invoke(
+            &sync_ix,
+            &[
+                ctx.accounts.deployer_wsol.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        let xfer_tokens = CpiContext::new_with_signer(
+            ctx.accounts.token_program.key(),
+            Transfer {
+                from: ctx.accounts.token_vault.to_account_info(),
+                to: ctx.accounts.deployer_token.to_account_info(),
+                authority: ctx.accounts.sol_vault.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::transfer(xfer_tokens, token_amount_for_pool)?;
+
+        // Burn vault remainder: `sol_vault` PDA is the token_vault authority (same signer as transfers).
+        if leftover_burn > 0 {
+            let burn_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                Burn {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    from: ctx.accounts.token_vault.to_account_info(),
+                    authority: ctx.accounts.sol_vault.to_account_info(),
+                },
+                signer_seeds,
+            );
+            token::burn(burn_ctx, leftover_burn)?;
+            msg!(
+                "bootstrap_omnipair_pool: burned {} leftover project tokens from bonding vault",
+                leftover_burn
+            );
+        }
+
+        let ix_data = build_omnipair_initialize_ix_data(&config, amount0_in, amount1_in)?;
+        let omnipair_ix = Instruction {
+            program_id: OMNIPAIR_PROGRAM_ID,
+            accounts: rem
+                .iter()
+                .map(|a| {
+                    anchor_lang::solana_program::instruction::AccountMeta {
+                        pubkey: a.key(),
+                        is_signer: a.is_signer,
+                        is_writable: a.is_writable,
+                    }
+                })
+                .collect(),
+            data: ix_data,
+        };
+        invoke(&omnipair_ix, rem)?;
+
+        token_state.gamm_pool = expected_pair;
+        token_state.real_sol_reserve = 0;
+        token_state.real_token_reserve = 0;
+
+        emit!(OmnipairPoolBootstrapped {
+            mint: token_state.mint,
+            pair: expected_pair,
+            deployer: deployer_pk,
+            amount0_in,
+            amount1_in,
+            tokens_burned: leftover_burn,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        Ok(())
+    }
+}
+
+/// Tokens to pair with `spendable_lamports` so pool ratio matches terminal bonding spot
+/// `virtual_token / virtual_sol` (same units as the constant-product curve state).
+fn token_amount_for_omnipair_at_terminal_price(
+    spendable_lamports: u64,
+    virtual_sol: u64,
+    virtual_token: u64,
+) -> Result<u64> {
+    let num = (spendable_lamports as u128)
+        .checked_mul(virtual_token as u128)
+        .ok_or(LaunchpadError::MathOverflow)?;
+    let out = num
+        .checked_div(virtual_sol as u128)
+        .ok_or(LaunchpadError::MathOverflow)?;
+    u64::try_from(out).map_err(|_| error!(LaunchpadError::MathOverflow))
 }
 
 // ─── Math helpers ──────────────────────────────────────────────────────────────
@@ -551,13 +810,16 @@ pub struct CreateToken<'info> {
     )]
     pub mint_authority: SystemAccount<'info>,
 
-    /// SOL vault for bonding curve proceeds
+    /// CHECK: System-owned 0-byte PDA vault; `init` funds rent-exempt minimum only — tradable SOL is `real_sol_reserve`.
     #[account(
-        mut,
+        init,
+        payer = creator,
+        space = 0,
         seeds = [b"sol_vault", mint.key().as_ref()],
-        bump
+        bump,
+        owner = anchor_lang::solana_program::system_program::ID,
     )]
-    pub sol_vault: SystemAccount<'info>,
+    pub sol_vault: UncheckedAccount<'info>,
 
     /// Token vault holding all 10M tokens
     #[account(
@@ -629,6 +891,24 @@ pub struct Trade<'info> {
         bump
     )]
     pub fee_escrow: SystemAccount<'info>,
+
+    /// Mint authority PDA — revoked in the same transaction when a buy crosses graduation.
+    #[account(
+        mut,
+        seeds = [b"mint_authority", mint.key().as_ref()],
+        bump
+    )]
+    pub mint_authority: SystemAccount<'info>,
+
+    #[account(mut, seeds = [b"platform"], bump = platform.bump)]
+    pub platform: Account<'info, PlatformState>,
+
+    /// CHECK: Must match `platform.fee_recipient` (validated in `graduate_token_now` when graduation runs).
+    #[account(mut)]
+    pub platform_fee_recipient: UncheckedAccount<'info>,
+
+    /// CHECK: Omnipair pool placeholder until Omnipair CPI is wired.
+    pub gamm_pool_placeholder: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -706,6 +986,60 @@ pub struct ClaimFees<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct BootstrapOmnipairPool<'info> {
+    #[account(
+        mut,
+        seeds = [b"token_state", token_state.mint.as_ref()],
+        bump = token_state.bump
+    )]
+    pub token_state: Account<'info, TokenState>,
+
+    #[account(mut, address = token_state.mint)]
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [b"sol_vault", token_state.mint.as_ref()],
+        bump = token_state.vault_bump
+    )]
+    pub sol_vault: SystemAccount<'info>,
+
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = sol_vault,
+    )]
+    pub token_vault: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub deployer: Signer<'info>,
+
+    /// Native SOL wrapped mint (So111...).
+    #[account(address = anchor_spl::token::spl_token::native_mint::ID)]
+    pub wsol_mint: Account<'info, Mint>,
+
+    #[account(
+        init_if_needed,
+        payer = deployer,
+        associated_token::mint = wsol_mint,
+        associated_token::authority = deployer,
+    )]
+    pub deployer_wsol: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = deployer,
+        associated_token::mint = mint,
+        associated_token::authority = deployer,
+    )]
+    pub deployer_token: Account<'info, TokenAccount>,
+
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+}
+
 // ─── State accounts ────────────────────────────────────────────────────────────
 
 #[account]
@@ -756,6 +1090,7 @@ pub struct TokenState {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, InitSpace)]
 pub enum TokenPhase {
     Bonding,
+    /// Legacy / edge case: older deployments stopped here before `graduate`. New buys finish in `Graduated` same-tx.
     ReadyToGraduate,
     Graduated,
 }
@@ -816,10 +1151,116 @@ pub struct FeesClaimed {
     pub timestamp: i64,
 }
 
+#[event]
+pub struct OmnipairPoolBootstrapped {
+    pub mint: Pubkey,
+    pub pair: Pubkey,
+    pub deployer: Pubkey,
+    pub amount0_in: u64,
+    pub amount1_in: u64,
+    /// Project tokens burned from the bonding `token_vault` after seeding Omnipair (excess supply).
+    pub tokens_burned: u64,
+    pub timestamp: i64,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub enum TradeType {
     Buy,
     Sell,
+}
+
+/// Shared graduation: platform fee from `sol_vault`, revoke mint authority, `phase = Graduated`.
+///
+/// **Omnipair:** Pool creation is **not** done here — same-tx graduation only revokes mint authority and
+/// sets `gamm_pool` from the client placeholder. After graduation, call **`bootstrap_omnipair_pool`**
+/// (see `program/OMNIPAIR_INTEGRATION.md`) to CPI Omnipair `initialize` and persist the real pair PDA.
+fn graduate_token_now<'info>(
+    token_state: &mut TokenState,
+    platform: &mut PlatformState,
+    mint: &Account<'info, Mint>,
+    mint_authority: &AccountInfo<'info>,
+    sol_vault: &AccountInfo<'info>,
+    platform_fee_recipient: &AccountInfo<'info>,
+    gamm_pool_placeholder: &AccountInfo<'info>,
+    system_program: &Program<'info, System>,
+    token_program: &Program<'info, Token>,
+    mint_authority_bump: u8,
+    vault_bump: u8,
+) -> Result<()> {
+    require!(
+        token_state.phase != TokenPhase::Graduated,
+        LaunchpadError::AlreadyGraduated
+    );
+    require_keys_eq!(
+        token_state.mint,
+        mint.key(),
+        LaunchpadError::InvalidMint
+    );
+    require_keys_eq!(
+        platform_fee_recipient.key(),
+        platform.fee_recipient,
+        LaunchpadError::InvalidPlatformFeeRecipient
+    );
+
+    let platform_fee =
+        (token_state.real_sol_reserve as u128 * PLATFORM_FEE_BPS as u128 / 10_000) as u64;
+
+    let rent_min = sol_vault_rent_exempt_min()?;
+    let lamports_after_fee = sol_vault
+        .lamports()
+        .checked_sub(platform_fee)
+        .ok_or(LaunchpadError::MathOverflow)?;
+    require!(lamports_after_fee >= rent_min, LaunchpadError::InsufficientLiquidity);
+
+    let mint_key = token_state.mint;
+    let vault_seeds = &[b"sol_vault", mint_key.as_ref(), &[vault_bump]];
+
+    anchor_lang::system_program::transfer(
+        CpiContext::new_with_signer(
+            system_program.key(),
+            anchor_lang::system_program::Transfer {
+                from: sol_vault.clone(),
+                to: platform_fee_recipient.clone(),
+            },
+            &[vault_seeds],
+        ),
+        platform_fee,
+    )?;
+
+    let auth_seeds = &[b"mint_authority", mint_key.as_ref(), &[mint_authority_bump]];
+    let signer_seeds = &[&auth_seeds[..]];
+
+    let cpi_ctx = CpiContext::new_with_signer(
+        token_program.key(),
+        SetAuthority {
+            account_or_mint: mint.to_account_info(),
+            current_authority: mint_authority.clone(),
+        },
+        signer_seeds,
+    );
+    token::set_authority(cpi_ctx, AuthorityType::MintTokens, None)?;
+
+    token_state.phase = TokenPhase::Graduated;
+    token_state.gamm_pool = gamm_pool_placeholder.key();
+
+    platform.total_graduated = platform
+        .total_graduated
+        .checked_add(1)
+        .ok_or(LaunchpadError::MathOverflow)?;
+    platform.total_sol_raised = platform
+        .total_sol_raised
+        .checked_add(token_state.sol_raised)
+        .ok_or(LaunchpadError::MathOverflow)?;
+
+    emit!(TokenGraduated {
+        mint: token_state.mint,
+        creator: token_state.creator,
+        sol_raised: token_state.sol_raised,
+        gamm_pool: token_state.gamm_pool,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
+
+    Ok(())
 }
 
 // ─── Errors ────────────────────────────────────────────────────────────────────
@@ -850,4 +1291,40 @@ pub enum LaunchpadError {
     Unauthorized,
     #[msg("Math overflow")]
     MathOverflow,
+    #[msg("Token has already graduated")]
+    AlreadyGraduated,
+    #[msg("Mint account does not match token state")]
+    InvalidMint,
+    #[msg("Platform fee recipient must match platform.fee_recipient")]
+    InvalidPlatformFeeRecipient,
+    #[msg("GAMM pool is already linked (gamm_pool is non-default)")]
+    GammPoolAlreadyLinked,
+    #[msg("Invalid Omnipair params hash for pool configuration")]
+    InvalidOmnipairParamsHash,
+    #[msg("LP metadata URI must start with http:// or https://")]
+    InvalidLpUri,
+    #[msg("LP name invalid or too long")]
+    InvalidLpName,
+    #[msg("LP symbol invalid or too long")]
+    InvalidLpSymbol,
+    #[msg("Wrong number of Omnipair remaining accounts (expected 25)")]
+    OmnipairAccountCount,
+    #[msg("Omnipair account addresses do not match expected program IDs or PDAs")]
+    OmnipairAccounts,
+    #[msg("Omnipair token0 must be lexicographically less than token1")]
+    OmnipairTokenOrder,
+    #[msg("Omnipair pair must be project mint + wrapped SOL")]
+    OmnipairMintMismatch,
+    #[msg("Omnipair pair PDA mismatch")]
+    OmnipairInvalidPair,
+    #[msg("Omnipair futarchy_authority PDA mismatch")]
+    OmnipairInvalidFutarchy,
+    #[msg("Omnipair event_authority PDA mismatch")]
+    OmnipairInvalidEventAuthority,
+    #[msg("Last remaining account must be the Omnipair program id")]
+    OmnipairInvalidProgram,
+    #[msg("Deployer token accounts must match token0/token1 ATAs")]
+    OmnipairDeployerAtas,
+    #[msg("Computed Omnipair token deposit exceeds token_vault balance (inconsistent curve state)")]
+    BootstrapPoolTokenMismatch,
 }

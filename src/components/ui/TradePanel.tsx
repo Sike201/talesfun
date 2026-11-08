@@ -1,37 +1,535 @@
 "use client";
 
-import { useState } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { useState, useRef, useEffect } from "react";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { ArrowDownUp } from "lucide-react";
-import { Token } from "@/types";
+import { PublicKey, SystemProgram, type Connection } from "@solana/web3.js";
+import {
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import { BN } from "@coral-xyz/anchor";
+import { Token, CREATOR_FEE_BPS } from "@/types";
 import { cn } from "@/lib/utils";
+import { useProgram } from "@/hooks/useProgram";
+import { useWalletBalances } from "@/hooks/useWalletBalances";
+import {
+  getTokenStatePDA,
+  getSolVaultPDA,
+  getFeeEscrowPDA,
+  getMintAuthorityPDA,
+  getPlatformPDA,
+  calculateTokensOut,
+  calculateSolOut,
+} from "@/lib/program";
+import {
+  persistLaunchpadTrade,
+  type LaunchpadTradePayload,
+} from "@/lib/persistLaunchpadTrade";
 import toast from "react-hot-toast";
+
+type TradePersistBase = Omit<LaunchpadTradePayload, "signature" | "timestamp">;
+
+/** Poll until signature reaches confirmed/finalized (or chain reports err). */
+async function confirmTradeSignature(
+  connection: Connection,
+  signature: string,
+  timeoutMs = 90_000
+): Promise<{ status: string }> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const { value } = await connection.getSignatureStatuses([signature], {
+      searchTransactionHistory: true,
+    });
+    const st = value[0];
+    if (st == null) {
+      await new Promise(r => setTimeout(r, 400));
+      continue;
+    }
+    if (st.err) {
+      throw new Error(`On-chain failure: ${JSON.stringify(st.err)}`);
+    }
+    const c = st.confirmationStatus;
+    if (c === "confirmed" || c === "finalized") {
+      return { status: c };
+    }
+    await new Promise(r => setTimeout(r, 400));
+  }
+  throw new Error("Confirmation timeout");
+}
+
+/** Collect message text from Error chains and common wallet/Anchor shapes. */
+function collectErrorText(error: unknown): string {
+  const parts: string[] = [];
+  const visit = (e: unknown, depth: number) => {
+    if (depth > 6 || e == null) return;
+    if (typeof e === "string") {
+      parts.push(e);
+      return;
+    }
+    if (e instanceof Error) {
+      parts.push(e.message);
+      if (e.cause != null) visit(e.cause, depth + 1);
+      return;
+    }
+    if (typeof e === "object") {
+      const o = e as Record<string, unknown>;
+      if (typeof o.message === "string") parts.push(o.message);
+      if (typeof o.msg === "string") parts.push(o.msg);
+      if (o.cause != null) visit(o.cause, depth + 1);
+    }
+  };
+  visit(error, 0);
+  return parts.join(" ");
+}
+
+function extractSignatureFromError(error: unknown): string | null {
+  const s = collectErrorText(error);
+  const m = s.match(/\b([1-9A-HJ-NP-Za-km-z]{80,88})\b/);
+  return m?.[1] ?? null;
+}
+
+function isAlreadyProcessedError(error: unknown): boolean {
+  const m = collectErrorText(error).toLowerCase();
+  return (
+    m.includes("this transaction has already been processed") ||
+    m.includes("already been processed") ||
+    m.includes("transaction has already been processed") ||
+    m.includes("already processed")
+  );
+}
+
+/** Anchor `LaunchpadError::InsufficientLiquidity` (6006) — used for pool depth and vault rent floor. */
+function isInsufficientLiquidityError(error: unknown): boolean {
+  const t = collectErrorText(error);
+  const lower = t.toLowerCase();
+  return (
+    lower.includes("insufficientliquidity") ||
+    lower.includes("insufficient liquidity") ||
+    /\b6006\b/.test(t) ||
+    /error number:\s*6006/i.test(t)
+  );
+}
+
+/** Matches launchpad mint (`TOKEN_DECIMALS` in program). */
+const TOKEN_UI_DECIMALS = 6;
+
+/** Smallest-units → plain decimal string for the sell amount input. */
+function rawTokenToUiAmountString(portionRaw: bigint): string {
+  const zero = BigInt(0);
+  if (portionRaw <= zero) return "0";
+  const scale = BigInt(10) ** BigInt(TOKEN_UI_DECIMALS);
+  const whole = portionRaw / scale;
+  const frac = portionRaw % scale;
+  if (frac === zero) return whole.toString();
+  const fracStr = frac.toString().padStart(TOKEN_UI_DECIMALS, "0").replace(/0+$/, "");
+  return `${whole}.${fracStr}`;
+}
+
+/**
+ * UI token string → raw integer units. Truncates fractional digits beyond `decimals` (no round-up).
+ */
+function uiTokenStringToRawTruncated(ui: string, decimals: number): bigint {
+  const trimmed = ui.trim();
+  const dot = trimmed.indexOf(".");
+  const wholeStr = dot === -1 ? trimmed : trimmed.slice(0, dot);
+  let fracStr = dot === -1 ? "" : trimmed.slice(dot + 1);
+  if (wholeStr === "" && fracStr === "") throw new Error("empty");
+  if (wholeStr !== "" && !/^\d+$/.test(wholeStr)) throw new Error("invalid");
+  if (!/^\d*$/.test(fracStr)) throw new Error("invalid");
+  const w = wholeStr === "" ? "0" : wholeStr.replace(/^0+/, "") || "0";
+  if (fracStr.length > decimals) fracStr = fracStr.slice(0, decimals);
+  else if (fracStr.length < decimals) fracStr = fracStr + "0".repeat(decimals - fracStr.length);
+  const scale = BigInt(10) ** BigInt(decimals);
+  return BigInt(w) * scale + BigInt(fracStr === "" ? "0" : fracStr);
+}
+
+async function logSendTransactionErrorLogs(error: unknown): Promise<void> {
+  const msg = collectErrorText(error) || String(error);
+  let printedLogs = false;
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "getLogs" in error &&
+    typeof (error as { getLogs: unknown }).getLogs === "function"
+  ) {
+    try {
+      const logs = await (error as { getLogs: () => Promise<string[] | null> }).getLogs();
+      if (logs && logs.length > 0) {
+        console.error("[higher.run] trade simulation logs:\n" + logs.join("\n"));
+        printedLogs = true;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!printedLogs) {
+    console.error("[higher.run] trade error (no simulation logs):", msg);
+  }
+}
 
 interface Props {
   token: Token;
 }
 
 export default function TradePanel({ token }: Props) {
-  const { connected } = useWallet();
+  useEffect(() => {
+    console.log("[higher.run] LIVE TradePanel loaded (tree: repo-root src/components/ui/TradePanel)");
+  }, []);
+
+  const { connected, publicKey } = useWallet();
+  const { connection } = useConnection();
+  const program = useProgram();
+  const { tokenBalanceRaw, refreshBalances } = useWalletBalances(token.mint);
   const [mode, setMode] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [isTrading, setIsTrading] = useState(false);
+  /** Synchronous guard — blocks double-submit before React re-renders. */
+  const tradePendingRef = useRef(false);
 
   const solAmount = parseFloat(amount) || 0;
   const estimatedTokens = solAmount > 0 ? Math.floor(solAmount / token.currentPrice) : 0;
 
   const handleTrade = async () => {
-    if (!connected) return;
-    if (!amount || solAmount <= 0) { toast.error("Enter an amount"); return; }
-    setLoading(true);
-    await new Promise(r => setTimeout(r, 1500));
-    toast.success(mode === "buy" ? `Bought ${estimatedTokens.toLocaleString()} ${token.ticker}` : `Sold ${amount} ${token.ticker}`);
-    setAmount("");
-    setLoading(false);
+    if (tradePendingRef.current || isTrading) {
+      console.log("[higher.run] trade blocked (already pending)", { mode });
+      return;
+    }
+    if (!connected || !program || !publicKey) {
+      toast.error("Connect your wallet to trade");
+      return;
+    }
+    if (!amount?.trim()) {
+      toast.error("Enter an amount");
+      return;
+    }
+    if (mode === "buy" && (solAmount <= 0 || !Number.isFinite(solAmount))) {
+      toast.error("Enter an amount");
+      return;
+    }
+
+    tradePendingRef.current = true;
+    console.log("[higher.run] trade start", { action: mode });
+    setIsTrading(true);
+    try {
+      const mint = new PublicKey(token.mint);
+      const [tokenState] = getTokenStatePDA(mint);
+      const [solVault] = getSolVaultPDA(mint);
+      const [feeEscrow] = getFeeEscrowPDA(mint);
+      const [mintAuthority] = getMintAuthorityPDA(mint);
+      const [platformPda] = getPlatformPDA();
+      const tokenVault = getAssociatedTokenAddressSync(mint, solVault, true);
+      const userTokenAccount = getAssociatedTokenAddressSync(mint, publicKey, false);
+
+      const refreshAfterTrade = async () => {
+        await refreshBalances();
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ts = await (program.account as any).tokenState.fetch(tokenState);
+          console.log("[higher.run] refreshed tokenState solRaised (raw):", ts.solRaised?.toString?.());
+        } catch (e) {
+          console.warn("[higher.run] tokenState refresh failed:", e);
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("higher:trade-complete", { detail: { mint: mint.toBase58() } })
+          );
+        }
+      };
+
+      const executeAndFinalize = async (
+        kind: "buy" | "sell",
+        rpcCall: () => Promise<string>,
+        persist: TradePersistBase | null
+      ) => {
+        const recordTrade = (sig: string) => {
+          if (!persist) return;
+          void persistLaunchpadTrade({
+            ...persist,
+            signature: sig,
+            timestamp: new Date().toISOString(),
+          });
+        };
+
+        let signature: string;
+        try {
+          signature = await rpcCall();
+        } catch (e) {
+          if (isAlreadyProcessedError(e)) {
+            console.log("[higher.run] duplicate / already-processed error treated as success", {
+              action: kind,
+              snippet: collectErrorText(e).slice(0, 200),
+            });
+            const maybeSig = extractSignatureFromError(e);
+            if (maybeSig) {
+              console.log("[higher.run] tx signature (from error text):", maybeSig);
+              try {
+                const conf = await confirmTradeSignature(connection, maybeSig);
+                console.log("[higher.run] confirmation result (duplicate path):", conf);
+                await refreshAfterTrade();
+                recordTrade(maybeSig);
+                const verb = kind === "buy" ? "Bought" : "Sold";
+                toast.success(`${verb} ${token.ticker}! TX: ${maybeSig.slice(0, 8)}...`);
+                setAmount("");
+                return;
+              } catch (dupErr) {
+                console.warn("[higher.run] duplicate path confirm failed, refreshing anyway:", dupErr);
+              }
+            }
+            await refreshAfterTrade();
+            if (maybeSig) recordTrade(maybeSig);
+            toast.success(
+              `${kind === "buy" ? "Buy" : "Sell"} completed on-chain. Balances refreshed.`
+            );
+            setAmount("");
+            return;
+          }
+          await logSendTransactionErrorLogs(e);
+          throw e;
+        }
+
+        console.log("[higher.run] tx signature:", signature);
+        const confResult = await confirmTradeSignature(connection, signature);
+        console.log("[higher.run] confirmation result:", confResult);
+        await refreshAfterTrade();
+        recordTrade(signature);
+        const verb = kind === "buy" ? "Bought" : "Sold";
+        toast.success(`${verb} ${token.ticker}! TX: ${signature.slice(0, 8)}...`);
+        setAmount("");
+      };
+
+      console.log("[higher.run] trade accounts derived:", {
+        mint: mint.toBase58(),
+        tokenState: tokenState.toBase58(),
+        solVault: solVault.toBase58(),
+        tokenVault: tokenVault.toBase58(),
+        feeEscrow: feeEscrow.toBase58(),
+        userTokenAccount: userTokenAccount.toBase58(),
+        user: publicKey.toBase58(),
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const platformRow = await (program.account as any).platformState.fetch(platformPda);
+      const platformFeeRecipient = platformRow.feeRecipient as PublicKey;
+
+      const tradeAccounts = {
+        tokenState,
+        mint,
+        solVault,
+        tokenVault,
+        userTokenAccount,
+        user: publicKey,
+        feeEscrow,
+        mintAuthority,
+        platform: platformPda,
+        platformFeeRecipient,
+        gammPoolPlaceholder: PublicKey.default,
+        systemProgram: SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const onChain = await (program.account as any).tokenState.fetch(tokenState);
+      const virtualSolReserve = new BN(onChain.virtualSolReserve.toString());
+      const virtualTokenReserve = new BN(onChain.virtualTokenReserve.toString());
+
+      if (mode === "buy") {
+        const solLamports = new BN(Math.floor(solAmount * 1e9));
+        const creatorFee = solLamports
+          .mul(new BN(CREATOR_FEE_BPS))
+          .div(new BN(10_000));
+        const netSol = solLamports.sub(creatorFee);
+
+        const expectedTokensOut = calculateTokensOut(
+          virtualSolReserve,
+          virtualTokenReserve,
+          netSol
+        );
+        const minTokensOut = expectedTokensOut.mul(new BN(99)).div(new BN(100));
+
+        console.log("[higher.run] buy quote:", {
+          solLamports: solLamports.toString(),
+          creatorFee: creatorFee.toString(),
+          netSol: netSol.toString(),
+          expectedTokensOut: expectedTokensOut.toString(),
+          minTokensOut: minTokensOut.toString(),
+        });
+
+        const buyPersist: TradePersistBase = {
+          mint: mint.toBase58(),
+          side: "buy",
+          sol_amount_raw: solLamports.toString(),
+          token_amount_raw: expectedTokensOut.toString(),
+          wallet: publicKey.toBase58(),
+          price_sol: expectedTokensOut.isZero()
+            ? 0
+            : netSol.toNumber() / 1e9 / (expectedTokensOut.toNumber() / 1e6),
+        };
+
+        await executeAndFinalize(
+          "buy",
+          () =>
+            program.methods
+              .buy(solLamports, minTokensOut)
+              .accountsPartial(tradeAccounts)
+              .rpc(),
+          buyPersist
+        );
+      } else {
+        let parsedRawBn: bigint;
+        try {
+          parsedRawBn = uiTokenStringToRawTruncated(amount, TOKEN_UI_DECIMALS);
+        } catch {
+          toast.error("Invalid token amount");
+          tradePendingRef.current = false;
+          setIsTrading(false);
+          return;
+        }
+        if (parsedRawBn <= BigInt(0)) {
+          toast.error("Enter an amount");
+          tradePendingRef.current = false;
+          setIsTrading(false);
+          return;
+        }
+        const walletRawBn = BigInt(tokenBalanceRaw || "0");
+        if (parsedRawBn > walletRawBn) {
+          toast.error("Amount exceeds your token balance");
+          tradePendingRef.current = false;
+          setIsTrading(false);
+          return;
+        }
+
+        console.log("[higher.run] sell amount parse:", {
+          inputUi: amount,
+          parsedTokenRaw: parsedRawBn.toString(),
+          walletTokenRaw: walletRawBn.toString(),
+        });
+
+        const tokenRaw = new BN(parsedRawBn.toString());
+        const expectedSolOut = calculateSolOut(
+          virtualSolReserve,
+          virtualTokenReserve,
+          tokenRaw
+        );
+        const minSolOut = expectedSolOut.mul(new BN(99)).div(new BN(100));
+
+        console.log("[higher.run] sell quote:", {
+          tokenRaw: tokenRaw.toString(),
+          expectedSolOut: expectedSolOut.toString(),
+          minSolOut: minSolOut.toString(),
+        });
+
+        const sellPersist: TradePersistBase = {
+          mint: mint.toBase58(),
+          side: "sell",
+          sol_amount_raw: expectedSolOut.toString(),
+          token_amount_raw: tokenRaw.toString(),
+          wallet: publicKey.toBase58(),
+          price_sol: tokenRaw.isZero()
+            ? 0
+            : expectedSolOut.toNumber() / 1e9 / (tokenRaw.toNumber() / 1e6),
+        };
+
+        await executeAndFinalize(
+          "sell",
+          () =>
+            program.methods
+              .sell(tokenRaw, minSolOut)
+              .accountsPartial(tradeAccounts)
+              .rpc(),
+          sellPersist
+        );
+      }
+    } catch (error) {
+      if (isAlreadyProcessedError(error)) {
+        console.log("[higher.run] duplicate / already-processed (outer) treated as success", {
+          action: mode,
+        });
+        try {
+          const mint = new PublicKey(token.mint);
+          const [tokenState] = getTokenStatePDA(mint);
+          await refreshBalances();
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const ts = await (program!.account as any).tokenState.fetch(tokenState);
+            console.log("[higher.run] refreshed tokenState solRaised (raw):", ts.solRaised?.toString?.());
+          } catch (e) {
+            console.warn("[higher.run] tokenState refresh failed:", e);
+          }
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("higher:trade-complete", { detail: { mint: mint.toBase58() } })
+            );
+          }
+        } catch (refreshErr) {
+          console.warn("[higher.run] refresh after duplicate (outer) failed:", refreshErr);
+        }
+        toast.success(
+          `${mode === "buy" ? "Buy" : "Sell"} completed on-chain. Balances refreshed.`
+        );
+        setAmount("");
+        return;
+      }
+      console.error("[higher.run] Trade failed:", error);
+      if (mode === "sell" && isInsufficientLiquidityError(error)) {
+        toast.error(
+          "This sell can't complete: the bonding vault doesn't have enough SOL for this payout " +
+            "(a small amount must stay for account rent). Older tokens, from before that vault update, " +
+            "may need a tiny SOL top-up to the vault before a full sell works.",
+          { duration: 9000 }
+        );
+        return;
+      }
+      const msg = collectErrorText(error) || "Trade failed";
+      toast.error(msg.length > 120 ? msg.slice(0, 120) + "..." : msg);
+    } finally {
+      tradePendingRef.current = false;
+      setIsTrading(false);
+    }
   };
 
   const quickAmounts = mode === "buy" ? ["0.1", "0.5", "1", "5"] : ["25%", "50%", "75%", "100%"];
+
+  const sellQuickDisabled =
+    isTrading ||
+    (() => {
+      try {
+        return BigInt(tokenBalanceRaw || "0") <= BigInt(0);
+      } catch {
+        return true;
+      }
+    })();
+
+  const applySellPercent = (pct: number) => {
+    let total: bigint;
+    try {
+      total = BigInt(tokenBalanceRaw || "0");
+    } catch {
+      toast.error("Could not read token balance");
+      return;
+    }
+    const zero = BigInt(0);
+    if (total <= zero) {
+      toast.error(`No ${token.ticker} balance`);
+      return;
+    }
+    // 100%: floor wallet balance to 1 decimal place in UI (avoids edge-case full-balance sells).
+    let portion: bigint;
+    if (pct === 100) {
+      const step = BigInt(10) ** BigInt(TOKEN_UI_DECIMALS - 1);
+      portion = (total / step) * step;
+    } else {
+      portion = (total * BigInt(pct)) / BigInt(100);
+    }
+    if (portion <= zero) {
+      toast.error("Amount too small");
+      return;
+    }
+    setAmount(rawTokenToUiAmountString(portion));
+  };
 
   return (
     <div className="p-4">
@@ -41,7 +539,9 @@ export default function TradePanel({ token }: Props) {
           {(["buy", "sell"] as const).map(m => (
             <button
               key={m}
-              onClick={() => { setMode(m); setAmount(""); }}
+              type="button"
+              disabled={isTrading}
+              onClick={() => { if (isTrading) return; setMode(m); setAmount(""); }}
               className={cn(
                 "flex-1 py-2 rounded-lg text-sm font-semibold transition-all capitalize",
                 mode === m
@@ -61,9 +561,10 @@ export default function TradePanel({ token }: Props) {
         <input
           type="number"
           value={amount}
+          disabled={isTrading}
           onChange={e => setAmount(e.target.value)}
           placeholder="0"
-          className="w-full bg-gray-100 rounded-xl px-4 py-3 text-sm font-medium text-gray-900 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-green-500/20 transition-all pr-16"
+          className="w-full bg-gray-100 rounded-xl px-4 py-3 text-sm font-medium text-gray-900 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-green-500/20 transition-all pr-16 disabled:opacity-50"
         />
         <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-400">
           {mode === "buy" ? "SOL" : token.ticker}
@@ -75,8 +576,19 @@ export default function TradePanel({ token }: Props) {
         {quickAmounts.map(q => (
           <button
             key={q}
-            onClick={() => setAmount(q.replace("%", ""))}
-            className="flex-1 py-1.5 text-[10px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition-colors"
+            type="button"
+            disabled={mode === "buy" ? isTrading : sellQuickDisabled}
+            onClick={() => {
+              if (isTrading) return;
+              if (mode === "buy") {
+                setAmount(q);
+                return;
+              }
+              const pct = parseInt(q, 10);
+              if (!Number.isFinite(pct) || pct <= 0) return;
+              applySellPercent(pct);
+            }}
+            className="flex-1 py-1.5 text-[10px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition-colors disabled:opacity-50"
           >
             {q}
           </button>
@@ -97,8 +609,9 @@ export default function TradePanel({ token }: Props) {
       {/* Action */}
       {connected ? (
         <button
+          type="button"
           onClick={handleTrade}
-          disabled={loading || !amount}
+          disabled={isTrading || !amount}
           className={cn(
             "w-full py-3 rounded-xl font-semibold text-sm transition-all",
             mode === "buy"
@@ -106,7 +619,7 @@ export default function TradePanel({ token }: Props) {
               : "bg-red-500 hover:bg-red-600 text-white disabled:opacity-40"
           )}
         >
-          {loading ? (
+          {isTrading ? (
             <span className="flex items-center justify-center gap-2">
               <ArrowDownUp size={14} className="animate-spin" /> Processing...
             </span>
@@ -120,3 +633,5 @@ export default function TradePanel({ token }: Props) {
     </div>
   );
 }
+
+console.log("[higher.run] LIVE TradePanel loaded");

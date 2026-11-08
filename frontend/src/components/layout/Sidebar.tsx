@@ -3,14 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { Home, LayoutGrid, Plus, User } from "lucide-react";
+import { Home, LayoutGrid, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "Home", icon: Home },
   { href: "/launches", label: "Explore", icon: LayoutGrid },
   { href: "/create", label: "Launch", icon: Plus, accent: true },
-  { href: "/dashboard", label: "Dashboard", icon: User },
 ];
 
 export default function Sidebar() {

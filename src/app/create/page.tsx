@@ -1,29 +1,26 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { useState, useRef, useEffect } from "react";
+import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import {
   Upload, Bird, Send, Globe, Zap, Shield, BadgeDollarSign,
   AlertCircle, CheckCircle2, ArrowRight, Info, Lock
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { FIXED_SUPPLY, GRADUATION_SOL, CREATOR_FEE_BPS } from "@/types";
+import { GRADUATION_SOL, CREATOR_FEE_BPS, FIXED_SUPPLY } from "@/types";
 import toast from "react-hot-toast";
 import Image from "next/image";
+import { Keypair, PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { useProgram } from "@/hooks/useProgram";
 import {
-  Keypair,
-  SystemProgram,
-  Transaction,
-} from "@solana/web3.js";
-import {
-  MINT_SIZE,
-  TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccountInstruction,
-  createInitializeMint2Instruction,
-  createMintToInstruction,
-  getAssociatedTokenAddressSync,
-} from "@solana/spl-token";
+  getMetadataPDA,
+  getMintAuthorityPDA,
+  getSolVaultPDA,
+  getTokenStatePDA,
+  getPlatformPDA,
+} from "@/lib/program";
 
 interface FormData {
   name: string;
@@ -38,18 +35,74 @@ interface FormData {
 }
 
 export default function CreatePage() {
+  useEffect(() => {
+    console.log("[higher.run] LIVE create page loaded (tree: repo-root src/app/create)");
+  }, []);
+
+  const { connected, publicKey } = useWallet();
   const { connection } = useConnection();
-  const { connected, publicKey, sendTransaction } = useWallet();
+  const program = useProgram();
   const [loading, setLoading] = useState(false);
   const [launched, setLaunched] = useState(false);
   const [launchedMint, setLaunchedMint] = useState("");
   const [ownershipUSD, setOwnershipUSD] = useState("");
+  const [platformReady, setPlatformReady] = useState<boolean | null>(null);
+  const [initializingPlatform, setInitializingPlatform] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState<FormData>({
     name: "", ticker: "", description: "", image: null, imagePreview: "",
     twitter: "", telegram: "", website: "", creatorFeeRecipient: "",
   });
+
+  // Check if the on-chain platform PDA is initialized
+  useEffect(() => {
+    async function checkPlatform() {
+      try {
+        const [pda] = getPlatformPDA();
+        const info = await connection.getAccountInfo(pda);
+        setPlatformReady(info !== null);
+        if (info) {
+          console.log("[higher.run] Platform PDA found:", pda.toBase58());
+        } else {
+          console.warn("[higher.run] Platform PDA not initialized yet:", pda.toBase58());
+        }
+      } catch {
+        setPlatformReady(false);
+      }
+    }
+    checkPlatform();
+  }, [connection]);
+
+  // Log wallet connection state
+  useEffect(() => {
+    if (connected && publicKey) {
+      console.log("[higher.run] Wallet connected:", publicKey.toBase58());
+    } else {
+      console.log("[higher.run] Wallet not connected");
+    }
+  }, [connected, publicKey]);
+
+  const handleInitializePlatform = async () => {
+    if (!program || !publicKey) return;
+    setInitializingPlatform(true);
+    try {
+      console.log("[higher.run] Calling initializePlatform...");
+      console.log("[higher.run] Authority (your wallet):", publicKey.toBase58());
+      const tx = await program.methods
+        .initializePlatform(publicKey) // fee recipient = your wallet for now
+        .accountsPartial({})
+        .rpc();
+      console.log("[higher.run] initializePlatform TX:", tx);
+      toast.success(`Platform initialized! TX: ${tx.slice(0, 8)}...`);
+      setPlatformReady(true);
+    } catch (error) {
+      console.error("[higher.run] initializePlatform failed:", error);
+      toast.error(error instanceof Error ? error.message : "Platform initialization failed");
+    } finally {
+      setInitializingPlatform(false);
+    }
+  };
 
   const set = (key: keyof FormData, value: string) =>
     setForm(prev => ({ ...prev, [key]: value }));
@@ -74,50 +127,153 @@ export default function CreatePage() {
   };
 
   const handleLaunch = async () => {
-    if (!connected || !publicKey) return;
+    if (!connected || !publicKey || !program) {
+      toast.error("Connect your wallet first");
+      return;
+    }
+    if (!platformReady) {
+      toast.error("Platform not initialized — click 'Initialize Platform' first");
+      return;
+    }
     const err = validate();
     if (err) { toast.error(err); return; }
 
     setLoading(true);
     try {
+      // 1. Upload image + metadata to Pinata (if image provided)
+      let metadataUri = "";
+      let imageUrl = "";
+      if (form.image) {
+        console.log("[higher.run] Uploading image to Pinata...");
+        const uploadData = new FormData();
+        uploadData.append("image", form.image);
+        uploadData.append("name", form.name);
+        uploadData.append("symbol", form.ticker);
+        uploadData.append("description", form.description);
+        if (form.twitter) uploadData.append("twitter", form.twitter);
+        if (form.telegram) uploadData.append("telegram", form.telegram);
+        if (form.website) uploadData.append("website", form.website);
+
+        const uploadRes = await fetch("/api/upload", { method: "POST", body: uploadData });
+        if (!uploadRes.ok) throw new Error("Image upload failed");
+        const uploadJson = (await uploadRes.json()) as { uri?: string; imageUri?: string };
+        metadataUri = uploadJson.uri ?? "";
+        imageUrl = uploadJson.imageUri ?? "";
+        console.log("[higher.run] Metadata URI:", metadataUri);
+      }
+
+      // 2. Generate mint keypair and derive all PDAs
       const mintKeypair = Keypair.generate();
-      const mintRent = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
-      const creatorTokenAccount = getAssociatedTokenAddressSync(mintKeypair.publicKey, publicKey);
+      const mint = mintKeypair.publicKey;
 
-      const tx = new Transaction().add(
-        SystemProgram.createAccount({
-          fromPubkey: publicKey,
-          newAccountPubkey: mintKeypair.publicKey,
-          space: MINT_SIZE,
-          lamports: mintRent,
-          programId: TOKEN_PROGRAM_ID,
-        }),
-        createInitializeMint2Instruction(mintKeypair.publicKey, 6, publicKey, null, TOKEN_PROGRAM_ID),
-        createAssociatedTokenAccountInstruction(publicKey, creatorTokenAccount, publicKey, mintKeypair.publicKey),
-        createMintToInstruction(mintKeypair.publicKey, creatorTokenAccount, publicKey, BigInt(FIXED_SUPPLY) * BigInt(10 ** 6))
-      );
+      const [tokenStatePDA] = getTokenStatePDA(mint);
+      const [mintAuthorityPDA] = getMintAuthorityPDA(mint);
+      const [solVaultPDA] = getSolVaultPDA(mint);
+      const [platformPDA] = getPlatformPDA();
+      const metadataPDA = getMetadataPDA(mint);
+      // ATA owned by sol_vault PDA (allowOwnerOffCurve = true because sol_vault is a PDA)
+      const tokenVaultATA = getAssociatedTokenAddressSync(mint, solVaultPDA, true);
 
-      const signature = await sendTransaction(tx, connection, { signers: [mintKeypair] });
-      await connection.confirmTransaction(signature, "confirmed");
+      console.log("[higher.run] === createToken accounts ===");
+      console.log("[higher.run]   creator        :", publicKey.toBase58());
+      console.log("[higher.run]   mint            :", mint.toBase58());
+      console.log("[higher.run]   token_state PDA :", tokenStatePDA.toBase58());
+      console.log("[higher.run]   mint_authority  :", mintAuthorityPDA.toBase58());
+      console.log("[higher.run]   sol_vault PDA   :", solVaultPDA.toBase58());
+      console.log("[higher.run]   token_vault ATA :", tokenVaultATA.toBase58());
+      console.log("[higher.run]   metadata PDA    :", metadataPDA.toBase58());
+      console.log("[higher.run]   platform PDA    :", platformPDA.toBase58());
 
-      const storedLaunches = JSON.parse(localStorage.getItem("higher.run.launches") ?? "[]");
-      storedLaunches.unshift({
-        id: mintKeypair.publicKey.toBase58(), mint: mintKeypair.publicKey.toBase58(),
-        name: form.name, ticker: form.ticker, description: form.description,
-        imageUrl: form.imagePreview, creator: publicKey.toBase58(),
-        creatorFeeRecipient: form.creatorFeeRecipient || publicKey.toBase58(),
-        twitter: form.twitter || undefined, telegram: form.telegram || undefined,
-        website: form.website || undefined, createdAt: new Date().toISOString(),
-        phase: "bonding", solRaised: 0, targetSOL: GRADUATION_SOL, tokensSold: 0,
-        totalSupply: FIXED_SUPPLY, currentPrice: 0.0000038, marketCap: 0,
-      });
-      localStorage.setItem("higher.run.launches", JSON.stringify(storedLaunches));
+      // 3. Determine fee recipient
+      let feeRecipient = publicKey;
+      if (form.creatorFeeRecipient) {
+        try { feeRecipient = new PublicKey(form.creatorFeeRecipient); }
+        catch { toast.error("Invalid fee recipient address"); setLoading(false); return; }
+      }
 
+      // 4. Call the on-chain createToken instruction
+      console.log("[higher.run] Sending createToken — Phantom should prompt to sign...");
+      const tx = await program.methods
+        .createToken({
+          name: form.name,
+          symbol: form.ticker,
+          uri: metadataUri,
+          creatorFeeRecipient: feeRecipient,
+        })
+        .accountsPartial({
+          mint,
+          mintAuthority: mintAuthorityPDA,
+          solVault: solVaultPDA,
+          tokenVault: tokenVaultATA,
+          tokenState: tokenStatePDA,
+          metadata: metadataPDA,
+          platform: platformPDA,
+          creator: publicKey,
+        })
+        .signers([mintKeypair])
+        .rpc();
+
+      console.log("[higher.run] createToken TX confirmed:", tx);
+
+      const totalSupplyRaw = FIXED_SUPPLY * 1_000_000;
+      const persistPayload = {
+        mint: mint.toBase58(),
+        creator: publicKey.toBase58(),
+        creator_fee_recipient: feeRecipient.toBase58(),
+        name: form.name.trim(),
+        symbol: form.ticker.trim(),
+        uri: metadataUri || null,
+        image_url: imageUrl || null,
+        description: form.description.trim(),
+        about: form.description.trim(),
+        twitter: form.twitter.trim() || null,
+        telegram: form.telegram.trim() || null,
+        website: form.website.trim() || null,
+        phase: "bonding" as const,
+        total_supply: totalSupplyRaw,
+      };
+      console.log("[higher.run] token persist payload:", JSON.stringify(persistPayload));
+      console.log("[higher.run] ABOUT TO POST /api/tokens");
+      try {
+        const persistRes = await fetch("/api/tokens", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(persistPayload),
+        });
+        const persistJson = await persistRes.json().catch(() => ({}));
+        console.log("[higher.run] token persist response:", persistRes.status, persistJson);
+        if (!persistRes.ok) {
+          toast.error(
+            typeof persistJson?.error === "string"
+              ? `Could not save token to database: ${persistJson.error.slice(0, 80)}`
+              : "Could not save token to database — trades may fail until this is fixed"
+          );
+        }
+      } catch (e) {
+        console.error("[higher.run] token persist request failed:", e);
+        toast.error("Could not reach server to save token metadata");
+      }
+
+      toast.success(`Token created! TX: ${tx.slice(0, 8)}...`);
       setLaunchedMint(mintKeypair.publicKey.toBase58());
       setLaunched(true);
-      toast.success("Token minted on Solana devnet!");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Launch failed");
+      console.error("[higher.run] Launch failed:", error);
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "getLogs" in error &&
+        typeof (error as { getLogs: unknown }).getLogs === "function"
+      ) {
+        try {
+          const logs = await (error as { getLogs: () => Promise<string[] | null> }).getLogs();
+          console.error("[higher.run] Launch logs:", logs);
+        } catch {
+          // getLogs itself failed — ignore
+        }
+      }
+      const msg = error instanceof Error ? error.message : "Launch failed";
+      toast.error(msg.length > 120 ? msg.slice(0, 120) + "..." : msg);
     } finally {
       setLoading(false);
     }
@@ -163,7 +319,7 @@ export default function CreatePage() {
     <div className="max-w-lg mx-auto px-6 py-10">
       <div className="mb-8">
         <h1 className="text-xl font-bold text-gray-900">New Project</h1>
-        <p className="text-sm text-gray-400 mt-1">10M fixed supply · Anti-rug · Perpetual royalties</p>
+        <p className="text-sm text-gray-400 mt-1">1B fixed supply · Anti-rug · Perpetual royalties</p>
       </div>
 
       <div className="bg-white rounded-2xl p-6 space-y-5">
@@ -329,7 +485,7 @@ export default function CreatePage() {
         {/* Launch summary */}
         <div className="bg-white rounded-xl p-3 space-y-1.5 text-xs">
           {[
-            { label: "Supply", value: "10,000,000 (fixed)", icon: Shield },
+            { label: "Supply", value: "1,000,000,000 (fixed)", icon: Shield },
             { label: "Graduation", value: `${GRADUATION_SOL} SOL`, icon: Zap },
             { label: "Creator Royalty", value: `${CREATOR_FEE_BPS / 100}% forever`, icon: BadgeDollarSign },
             { label: "Mint Authority", value: "Revoked at graduation", icon: Lock },
@@ -342,11 +498,30 @@ export default function CreatePage() {
           ))}
         </div>
 
+        {/* Platform init banner (one-time setup) */}
+        {connected && platformReady === false && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 space-y-2">
+            <div className="flex items-center gap-2 text-yellow-700 text-xs font-semibold">
+              <AlertCircle size={14} /> Platform not initialized
+            </div>
+            <p className="text-xs text-yellow-600">
+              The on-chain platform account must be created once before any tokens can launch.
+            </p>
+            <button
+              onClick={handleInitializePlatform}
+              disabled={initializingPlatform}
+              className="w-full py-2.5 rounded-xl text-sm font-semibold bg-yellow-500 hover:bg-yellow-600 text-white disabled:opacity-50 transition-colors"
+            >
+              {initializingPlatform ? "Initializing..." : "Initialize Platform"}
+            </button>
+          </div>
+        )}
+
         {/* Launch button */}
         {connected ? (
           <button
             onClick={handleLaunch}
-            disabled={loading}
+            disabled={loading || platformReady === false}
             className="glass-trade-btn"
           >
             {loading ? (
@@ -358,7 +533,8 @@ export default function CreatePage() {
             )}
           </button>
         ) : (
-          <div className="flex justify-center">
+          <div className="flex flex-col items-center gap-2">
+            <p className="text-xs text-gray-400">Connect your wallet to launch</p>
             <WalletMultiButton />
           </div>
         )}
@@ -367,3 +543,5 @@ export default function CreatePage() {
     </div>
   );
 }
+
+console.log("[higher.run] LIVE create page loaded");

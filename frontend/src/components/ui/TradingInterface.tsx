@@ -1,17 +1,37 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { AlertTriangle } from "lucide-react";
 import { Token } from "@/types";
 import { cn, formatUSD } from "@/lib/utils";
 import toast from "react-hot-toast";
+import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
+import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
+import { useWalletBalances } from "@/hooks/useWalletBalances";
+import { persistLaunchpadTrade } from "@/lib/persistLaunchpadTrade";
+
+function isLikelyBenignWalletOrRpcNoise(e: unknown): boolean {
+  const m = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return (
+    (m.includes("ws") && m.includes("undefined")) ||
+    (m.includes("websocket") && m.includes("undefined"))
+  );
+}
 
 type Mode = "swap" | "leverage" | "borrow";
 
 interface Props {
   token: Token;
+  /** Omnipair reserve-implied spot (SOL per token); when set, swap estimates use this instead of bonding price. */
+  spotPriceSol?: number | null;
+  /** When set with a positive spot, swap executes real Omnipair `swap` (WSOL ↔ token). */
+  omnipairPoolSnapshot?: OmnipairPoolSnapshot | null;
+  /** Open leverage tab (e.g. from home Long/Short links). */
+  initialMode?: Mode;
+  initialLeverageDirection?: "long" | "short";
 }
 
 /* ── Slippage popover ──────────────────────────────────────────────── */
@@ -122,9 +142,21 @@ function LeverageSlider({
 
 /* ── Root component ────────────────────────────────────────────────── */
 
-export default function TradingInterface({ token }: Props) {
+export default function TradingInterface({
+  token,
+  spotPriceSol,
+  omnipairPoolSnapshot,
+  initialMode = "swap",
+  initialLeverageDirection,
+}: Props) {
   const { connected } = useWallet();
-  const [mode, setMode] = useState<Mode>("swap");
+  const [mode, setMode] = useState<Mode>(initialMode);
+  const usingPoolSpot =
+    spotPriceSol != null && Number.isFinite(spotPriceSol) && spotPriceSol > 0;
+  const omnipairSwapReady =
+    usingPoolSpot &&
+    omnipairPoolSnapshot != null &&
+    omnipairPoolSnapshot.spotPriceSol > 0;
 
   return (
     <div className="bg-white rounded-lg overflow-hidden">
@@ -144,39 +176,195 @@ export default function TradingInterface({ token }: Props) {
         ))}
       </div>
 
+      {omnipairSwapReady && mode === "swap" ? (
+        <p className="px-4 -mt-1 mb-1 text-[10px] text-emerald-800 font-medium">
+          Omnipair swap — uses your WSOL account for SOL; SOL is wrapped automatically when you buy.
+        </p>
+      ) : null}
       <div className="px-4 pb-4">
-        {mode === "swap"     && <SwapPanel     token={token} connected={connected} />}
-        {mode === "leverage" && <LeveragePanel token={token} connected={connected} />}
+        {mode === "swap"     && (
+          <SwapPanel
+            token={token}
+            connected={connected}
+            spotPriceSol={usingPoolSpot ? spotPriceSol! : null}
+            omnipairPoolSnapshot={omnipairSwapReady ? omnipairPoolSnapshot! : null}
+          />
+        )}
+        {mode === "leverage" && (
+          <LeveragePanel
+            token={token}
+            connected={connected}
+            initialDirection={initialLeverageDirection}
+          />
+        )}
         {mode === "borrow"   && <BorrowPanel   token={token} connected={connected} />}
       </div>
     </div>
   );
 }
 
+function formatSwapAmountInput(n: number, maxDecimals: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const t = 10 ** maxDecimals;
+  const floored = Math.floor(n * t) / t;
+  return floored.toFixed(maxDecimals).replace(/\.?0+$/, "");
+}
+
 /* ─── Swap ───────────────────────────────────────────────────────── */
 
-function SwapPanel({ token, connected }: { token: Token; connected: boolean }) {
+function SwapPanel({
+  token,
+  connected,
+  spotPriceSol,
+  omnipairPoolSnapshot,
+}: {
+  token: Token;
+  connected: boolean;
+  spotPriceSol: number | null;
+  omnipairPoolSnapshot: OmnipairPoolSnapshot | null;
+}) {
+  const { connection } = useConnection();
+  const walletAdapter = useWallet();
+  const swapPendingRef = useRef(false);
+  const {
+    solBalanceLamports,
+    tokenBalanceRaw,
+    tokenDecimals,
+    loading: walletBalLoading,
+    refreshBalances,
+  } = useWalletBalances(token.mint);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
   const [slippage, setSlippage] = useState("5");
   const [loading, setLoading] = useState(false);
 
+  const priceSol =
+    spotPriceSol != null && spotPriceSol > 0 ? spotPriceSol : token.currentPrice;
+
   const num = parseFloat(amount) || 0;
   const estimated =
     side === "buy"
-      ? num > 0 ? Math.floor(num / token.currentPrice) : 0
-      : num * token.currentPrice;
+      ? num > 0 && priceSol > 0 ? Math.floor(num / priceSol) : 0
+      : num * priceSol;
 
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
 
+  const applyOmnipairQuickPercent = (pct: number) => {
+    if (!omnipairPoolSnapshot) return;
+    if (side === "buy") {
+      const maxSol = omnipairMaxBuySolUi(solBalanceLamports);
+      const sol = (maxSol * pct) / 100;
+      setAmount(formatSwapAmountInput(sol, 9));
+    } else {
+      const raw = BigInt(tokenBalanceRaw || "0");
+      const slice = (raw * BigInt(pct)) / BigInt(100);
+      const ui = Number(slice) / 10 ** tokenDecimals;
+      setAmount(
+        formatSwapAmountInput(ui, Math.min(8, tokenDecimals))
+      );
+    }
+  };
+
   const handleTrade = async () => {
-    if (!connected || !amount) return;
+    if (!connected || !amount || swapPendingRef.current) return;
+    swapPendingRef.current = true;
     setLoading(true);
-    await new Promise(r => setTimeout(r, 1200));
-    toast.success(`${side === "buy" ? "Bought" : "Sold"} ${token.ticker}`);
-    setAmount("");
-    setLoading(false);
+    try {
+      if (
+        omnipairPoolSnapshot &&
+        walletAdapter.publicKey &&
+        walletAdapter.signTransaction
+      ) {
+        const slip = parseFloat(slippage);
+        const anchorWallet = {
+          publicKey: walletAdapter.publicKey,
+          signTransaction: walletAdapter.signTransaction.bind(walletAdapter),
+          signAllTransactions:
+            walletAdapter.signAllTransactions?.bind(walletAdapter) ??
+            (async <T,>(txs: T[]) => {
+              const out: T[] = [];
+              for (const t of txs) {
+                out.push(await walletAdapter.signTransaction!(t as never));
+              }
+              return out;
+            }),
+        } as AnchorWallet;
+        if (side === "sell") {
+          console.info("[omnipair:swap] SELL: UI swap request", {
+            amountUi: num,
+            mint: token.mint,
+          });
+        }
+        const { signature, fill } = await sendOmnipairSwapTx({
+          connection,
+          wallet: anchorWallet,
+          snapshot: omnipairPoolSnapshot,
+          side,
+          amountUi: num,
+          slippagePercent: Number.isFinite(slip) ? slip : 5,
+        });
+        toast.success(
+          `${side === "buy" ? "Bought" : "Sold"} ${token.ticker} (Omnipair)`
+        );
+        void persistLaunchpadTrade({
+          mint: token.mint,
+          signature,
+          side,
+          sol_amount_raw: fill.sol_amount_raw,
+          token_amount_raw: fill.token_amount_raw,
+          timestamp: fill.timestamp,
+          wallet: walletAdapter.publicKey.toBase58(),
+          price_sol: fill.price_sol,
+          source: "omnipair",
+        });
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("higher:trade-complete", {
+              detail: {
+                mint: token.mint,
+                timestamp: fill.timestamp,
+                price_sol: fill.price_sol,
+                sol_amount_raw: fill.sol_amount_raw,
+                source: "omnipair" as const,
+              },
+            })
+          );
+        }
+        if (side === "sell") {
+          console.info("[omnipair:swap] SELL: swap completed — persist + events dispatched", {
+            signature,
+          });
+          void refreshBalances().then(() => {
+            console.info(
+              "[omnipair:swap] SELL: post-success balances refresh completed"
+            );
+          });
+          console.info(
+            "[omnipair:swap] SELL: post-success balances refresh scheduled"
+          );
+        }
+        console.info("[omnipair:swap] done", { signature, side });
+      } else {
+        await new Promise(r => setTimeout(r, 1200));
+        toast.success(`${side === "buy" ? "Bought" : "Sold"} ${token.ticker}`);
+      }
+      setAmount("");
+    } catch (e) {
+      console.error("[omnipair:swap] failed", e);
+      if (isLikelyBenignWalletOrRpcNoise(e)) {
+        console.warn("[omnipair:swap] benign-looking RPC/wallet noise — check balances / explorer", e);
+        toast(
+          "Swap may have completed; if balances changed, refresh the page. (RPC/wallet message was ignored.)",
+          { icon: "ℹ️", duration: 5000 }
+        );
+      } else {
+        toast.error(e instanceof Error ? e.message : "Swap failed");
+      }
+    } finally {
+      swapPendingRef.current = false;
+      setLoading(false);
+    }
   };
 
   return (
@@ -200,6 +388,8 @@ function SwapPanel({ token, connected }: { token: Token; connected: boolean }) {
         {(["buy", "sell"] as const).map(s => (
           <button
             key={s}
+            type="button"
+            disabled={loading}
             onClick={() => { setSide(s); setAmount(""); }}
             className={cn(
               "relative flex-1 py-2.5 rounded-md text-sm font-semibold transition-colors duration-200 z-10",
@@ -222,7 +412,15 @@ function SwapPanel({ token, connected }: { token: Token; connected: boolean }) {
       <div className="bg-gray-100 rounded-lg p-3">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] text-gray-400">Amount</span>
-          <button onClick={() => setAmount("100")} className="text-[10px] text-gray-500 font-semibold hover:text-gray-700">
+          <button
+            type="button"
+            disabled={loading || (omnipairPoolSnapshot != null && walletBalLoading)}
+            onClick={() => {
+              if (omnipairPoolSnapshot) applyOmnipairQuickPercent(100);
+              else setAmount("100");
+            }}
+            className="text-[10px] text-gray-500 font-semibold hover:text-gray-700 disabled:opacity-40"
+          >
             Max
           </button>
         </div>
@@ -240,15 +438,23 @@ function SwapPanel({ token, connected }: { token: Token; connected: boolean }) {
         </div>
       </div>
 
-      {/* Quick amounts — always 25 / 50 / 100% */}
+      {/* Quick amounts — Omnipair: % of spendable SOL (buy) or token balance (sell) */}
       <div className="flex gap-1.5">
-        {["25%", "50%", "100%"].map(q => (
+        {([25, 50, 100] as const).map(pct => (
           <button
-            key={q}
-            onClick={() => setAmount(q.replace("%", ""))}
-            className="flex-1 py-1.5 text-[10px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md transition-colors"
+            key={pct}
+            type="button"
+            disabled={
+              loading ||
+              (omnipairPoolSnapshot != null && walletBalLoading)
+            }
+            onClick={() => {
+              if (omnipairPoolSnapshot) applyOmnipairQuickPercent(pct);
+              else setAmount(String(pct));
+            }}
+            className="flex-1 py-1.5 text-[10px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md transition-colors disabled:opacity-40 disabled:pointer-events-none"
           >
-            {q}
+            {pct}%
           </button>
         ))}
       </div>
@@ -267,11 +473,23 @@ function SwapPanel({ token, connected }: { token: Token; connected: boolean }) {
       {/* CTA */}
       {connected ? (
         <button
+          type="button"
           onClick={handleTrade}
-          disabled={loading || !amount}
-          className="glass-trade-btn"
+          disabled={
+            loading ||
+            !amount ||
+            (omnipairPoolSnapshot != null && walletBalLoading)
+          }
+          aria-busy={loading}
+          className="glass-trade-btn disabled:opacity-50 disabled:pointer-events-none"
         >
-          {loading ? "Processing…" : side === "buy" ? `Buy ${token.ticker}` : `Sell ${token.ticker}`}
+          {loading && omnipairPoolSnapshot
+            ? "Swapping…"
+            : loading
+              ? "Processing…"
+              : side === "buy"
+                ? `Buy ${token.ticker}`
+                : `Sell ${token.ticker}`}
         </button>
       ) : (
         <WalletMultiButton />
@@ -282,8 +500,18 @@ function SwapPanel({ token, connected }: { token: Token; connected: boolean }) {
 
 /* ─── Leverage ───────────────────────────────────────────────────── */
 
-function LeveragePanel({ token, connected }: { token: Token; connected: boolean }) {
-  const [direction, setDirection] = useState<"long" | "short">("long");
+function LeveragePanel({
+  token,
+  connected,
+  initialDirection,
+}: {
+  token: Token;
+  connected: boolean;
+  initialDirection?: "long" | "short";
+}) {
+  const [direction, setDirection] = useState<"long" | "short">(
+    initialDirection ?? "long"
+  );
   const [size, setSize] = useState("");
   const [leverage, setLeverage] = useState(1);
   const [loading, setLoading] = useState(false);

@@ -11,12 +11,24 @@ export interface Token {
   twitter?: string;
   telegram?: string;
   website?: string;
+  /** On-chain metadata JSON URI (Pinata / IPFS). Used to load image + description. */
+  metadataUri?: string;
   createdAt: Date;
 
-  phase: "bonding" | "graduated";
+  phase: "bonding" | "ready_to_graduate" | "graduated";
   solRaised: number;
   targetSOL: number;
   tokensSold: number;
+  /**
+   * Bonding vault reserves from on-chain `TokenState` (SOL lamports / token raw 10^-6).
+   * After Omnipair bootstrap these are 0 on-chain; Supabase may still show stale initial values.
+   */
+  chainRealSolReserveSol?: number;
+  chainRealSolReserveLamports?: string;
+  chainRealTokenReserveRaw?: string;
+  /** Virtual AMM reserves (lamports / raw token) — required for exact bonding quotes. */
+  chainVirtualSolLamports?: string;
+  chainVirtualTokenReserveRaw?: string;
   totalSupply: number;
   currentPrice: number;
   marketCap: number;
@@ -39,6 +51,8 @@ export interface Trade {
   price: number;
   timestamp: Date;
   txSignature: string;
+  /** Market venue; bonding rows omit or default to bonding. */
+  source?: "bonding" | "omnipair";
 }
 
 export interface CreatorStats {
@@ -49,7 +63,16 @@ export interface CreatorStats {
 }
 
 export const FIXED_SUPPLY = 1_000_000_000;
-export const GRADUATION_SOL = 85;
+
+/** Display / progress target; must match deployed program threshold. Default 85 (prod). Set `NEXT_PUBLIC_GRADUATION_SOL=5` when using a `dev-graduation` program build. */
+export const GRADUATION_SOL: number = (() => {
+  const raw = process.env.NEXT_PUBLIC_GRADUATION_SOL;
+  if (raw != null && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 85;
+})();
 export const CREATOR_FEE_BPS = 50;
 export const LP_FEE_BPS = 50;
 export const TOTAL_FEE_BPS = 100;

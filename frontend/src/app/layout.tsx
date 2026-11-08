@@ -3,12 +3,15 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import "./globals.css";
 import WalletContextProvider from "@/context/WalletContextProvider";
 import Navbar from "@/components/layout/Navbar";
+import HomeBodyClass from "@/components/landing/HomeBodyClass";
 import { Toaster } from "react-hot-toast";
+import { cn } from "@/lib/utils";
+import { geist, fraunces } from "@/lib/fonts";
 
 export const metadata: Metadata = {
-  title: "higher.run — Launch an idea and make it liquid capital",
+  title: "Tales — Launch markets powered by Omnipair",
   description:
-    "The DeFi-native token launchpad on Solana. Launch on a bonding curve, graduate to Omnipair GAMM, borrow, leverage, and earn perpetual royalties.",
+    "Bonding curve launches that graduate into Omnipair — long or short any graduated token.",
 };
 
 export default function RootLayout({
@@ -17,11 +20,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="antialiased" style={{ backgroundColor: "#F3F4F6" }}>
+    <html lang="en" className={cn(geist.variable, fraunces.variable)}>
+      <body className={cn(geist.className, "antialiased")}>
         <WalletContextProvider>
+          <HomeBodyClass />
           <Navbar />
-          <main className="pb-20 md:pb-0">{children}</main>
+          <main className="pb-20 md:pb-0 min-h-screen">{children}</main>
           <Toaster
             position="bottom-right"
             toastOptions={{

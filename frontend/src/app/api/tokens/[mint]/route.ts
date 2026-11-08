@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabase } from "@/lib/supabase";
 
-// GET /api/tokens/[mint] — single token by mint address
+// GET /api/tokens/[mint] — Supabase index row (metadata + legacy columns). Not authoritative for bonding state; UI must use on-chain TokenState.
 export async function GET(
   _req: NextRequest,
   ctx: RouteContext<"/api/tokens/[mint]">

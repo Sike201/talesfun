@@ -14,16 +14,30 @@ export async function GET(
 
     const { data, error } = await supabase
       .from("trades")
-      .select("*")
+      .select(
+        "id, mint, signature, side, wallet, sol_amount_raw, token_amount_raw, price_sol, timestamp, source"
+      )
       .eq("mint", mint)
       .order("timestamp", { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (error) {
+      console.warn("[trade-history] GET trades Supabase error", mint, error.message);
       return Response.json({ error: error.message }, { status: 500 });
     }
 
-    return Response.json(data);
+    const rows = data ?? [];
+    console.log(
+      "[trade-history] GET trades mint:",
+      mint,
+      "row count:",
+      rows.length,
+      "limit",
+      limit,
+      "offset",
+      offset
+    );
+    return Response.json(rows);
   } catch (error) {
     return Response.json(
       { error: "Failed to fetch trades", details: String(error) },

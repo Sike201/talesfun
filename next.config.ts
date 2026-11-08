@@ -15,6 +15,11 @@ const nextConfig: NextConfig = {
         protocol: "https",
         hostname: "ipfs.io",
       },
+      {
+        protocol: "https",
+        hostname: "gateway.pinata.cloud",
+        pathname: "/ipfs/**",
+      },
     ],
   },
   // Silence Turbopack warning — no custom webpack config needed

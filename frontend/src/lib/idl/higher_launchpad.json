@@ -4,9 +4,404 @@
     "name": "higher_launchpad",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Higher.run \u2014 Creator-first bonding curve launchpad with Omnipair GAMM graduation"
+    "description": "Higher.run — Creator-first bonding curve launchpad with Omnipair GAMM graduation"
   },
   "instructions": [
+    {
+      "name": "bootstrap_omnipair_pool",
+      "docs": [
+        "After graduation, move `sol_vault` SOL + a **calculated** slice of `token_vault` into the",
+        "`deployer` WSOL / token ATAs, then CPI Omnipair `initialize`. On success, sets",
+        "`token_state.gamm_pool` to the new pair PDA.",
+        "",
+        "**Pump-style pricing (vs old behavior):** Previously we moved **all** spendable SOL and **all**",
+        "vault tokens into Omnipair, so the pool ratio was `SOL / full_vault_balance`, which is **far below**",
+        "the terminal bonding-curve spot (virtual_sol/virtual_token) and diluted the post-migration price.",
+        "Now we deposit `spendable_lamports` and exactly `token_amount_for_pool` such that",
+        "`token_amount_for_pool / spendable_lamports ≈ virtual_token_reserve / virtual_sol_reserve`, then",
+        "**burn** the vault remainder so excess supply does not enter the pool.",
+        "",
+        "**Client responsibilities:** append `remaining_accounts` in Omnipair IDL order (25 accounts),",
+        "fund `deployer` with ~0.2 SOL + rent for Omnipair pair creation fee and new accounts, pass an",
+        "empty `lp_mint` account (82 bytes, uninitialized), and use canonical mint order `token0 < token1`."
+      ],
+      "discriminator": [
+        33,
+        199,
+        46,
+        84,
+        58,
+        189,
+        139,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "token_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  107,
+                  101,
+                  110,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_state.mint",
+                "account": "TokenState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_state.mint",
+                "account": "TokenState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "sol_vault"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "deployer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "wsol_mint",
+          "docs": [
+            "Native SOL wrapped mint (So111...)."
+          ],
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "deployer_wsol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "deployer"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wsol_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "deployer_token",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "deployer"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": [
+        {
+          "name": "config",
+          "type": {
+            "defined": {
+              "name": "OmnipairPoolConfigArgs"
+            }
+          }
+        }
+      ]
+    },
     {
       "name": "buy",
       "docs": [
@@ -273,7 +668,7 @@
         {
           "name": "fee_escrow",
           "docs": [
-            "Fee escrow PDA \u2014 receives creator fees during buy"
+            "Fee escrow PDA — receives creator fees during buy"
           ],
           "writable": true,
           "pda": {
@@ -300,6 +695,68 @@
               }
             ]
           }
+        },
+        {
+          "name": "mint_authority",
+          "docs": [
+            "Mint authority PDA — revoked in the same transaction when a buy crosses graduation."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "platform",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  116,
+                  102,
+                  111,
+                  114,
+                  109
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "platform_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "gamm_pool_placeholder"
         },
         {
           "name": "system_program",
@@ -496,9 +953,6 @@
         },
         {
           "name": "sol_vault",
-          "docs": [
-            "SOL vault for bonding curve proceeds"
-          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -681,8 +1135,9 @@
     {
       "name": "graduate",
       "docs": [
-        "Graduate the token: revoke mint authority, seed Omnipair GAMM pool.",
-        "Called by anyone once the threshold is reached."
+        "Graduate the token: revoke mint authority, record GAMM placeholder.",
+        "Normally completes inside `buy` in the same transaction as the threshold-crossing trade.",
+        "Kept for legacy `ReadyToGraduate` accounts and recovery if a client skipped accounts."
       ],
       "discriminator": [
         45,
@@ -731,7 +1186,7 @@
         {
           "name": "mint_authority",
           "docs": [
-            "PDA holding mint authority \u2014 will be stripped of authority"
+            "PDA holding mint authority — will be stripped of authority"
           ],
           "writable": true,
           "pda": {
@@ -1245,7 +1700,7 @@
         {
           "name": "fee_escrow",
           "docs": [
-            "Fee escrow PDA \u2014 receives creator fees during buy"
+            "Fee escrow PDA — receives creator fees during buy"
           ],
           "writable": true,
           "pda": {
@@ -1272,6 +1727,68 @@
               }
             ]
           }
+        },
+        {
+          "name": "mint_authority",
+          "docs": [
+            "Mint authority PDA — revoked in the same transaction when a buy crosses graduation."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "platform",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  116,
+                  102,
+                  111,
+                  114,
+                  109
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "platform_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "gamm_pool_placeholder"
         },
         {
           "name": "system_program",
@@ -1351,6 +1868,19 @@
         125,
         195,
         142
+      ]
+    },
+    {
+      "name": "OmnipairPoolBootstrapped",
+      "discriminator": [
+        182,
+        190,
+        29,
+        224,
+        135,
+        217,
+        221,
+        33
       ]
     },
     {
@@ -1453,6 +1983,96 @@
       "code": 6011,
       "name": "MathOverflow",
       "msg": "Math overflow"
+    },
+    {
+      "code": 6012,
+      "name": "AlreadyGraduated",
+      "msg": "Token has already graduated"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidMint",
+      "msg": "Mint account does not match token state"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidPlatformFeeRecipient",
+      "msg": "Platform fee recipient must match platform.fee_recipient"
+    },
+    {
+      "code": 6015,
+      "name": "GammPoolAlreadyLinked",
+      "msg": "GAMM pool is already linked (gamm_pool is non-default)"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidOmnipairParamsHash",
+      "msg": "Invalid Omnipair params hash for pool configuration"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidLpUri",
+      "msg": "LP metadata URI must start with http:// or https://"
+    },
+    {
+      "code": 6018,
+      "name": "InvalidLpName",
+      "msg": "LP name invalid or too long"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidLpSymbol",
+      "msg": "LP symbol invalid or too long"
+    },
+    {
+      "code": 6020,
+      "name": "OmnipairAccountCount",
+      "msg": "Wrong number of Omnipair remaining accounts (expected 25)"
+    },
+    {
+      "code": 6021,
+      "name": "OmnipairAccounts",
+      "msg": "Omnipair account addresses do not match expected program IDs or PDAs"
+    },
+    {
+      "code": 6022,
+      "name": "OmnipairTokenOrder",
+      "msg": "Omnipair token0 must be lexicographically less than token1"
+    },
+    {
+      "code": 6023,
+      "name": "OmnipairMintMismatch",
+      "msg": "Omnipair pair must be project mint + wrapped SOL"
+    },
+    {
+      "code": 6024,
+      "name": "OmnipairInvalidPair",
+      "msg": "Omnipair pair PDA mismatch"
+    },
+    {
+      "code": 6025,
+      "name": "OmnipairInvalidFutarchy",
+      "msg": "Omnipair futarchy_authority PDA mismatch"
+    },
+    {
+      "code": 6026,
+      "name": "OmnipairInvalidEventAuthority",
+      "msg": "Omnipair event_authority PDA mismatch"
+    },
+    {
+      "code": 6027,
+      "name": "OmnipairInvalidProgram",
+      "msg": "Last remaining account must be the Omnipair program id"
+    },
+    {
+      "code": 6028,
+      "name": "OmnipairDeployerAtas",
+      "msg": "Deployer token accounts must match token0/token1 ATAs"
+    },
+    {
+      "code": 6029,
+      "name": "BootstrapPoolTokenMismatch",
+      "msg": "Computed Omnipair token deposit exceeds token_vault balance (inconsistent curve state)"
     }
   ],
   "types": [
@@ -1512,6 +2132,135 @@
           {
             "name": "mint",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OmnipairPoolBootstrapped",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "pair",
+            "type": "pubkey"
+          },
+          {
+            "name": "deployer",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount0_in",
+            "type": "u64"
+          },
+          {
+            "name": "amount1_in",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_burned",
+            "docs": [
+              "Project tokens burned from the bonding `token_vault` after seeding Omnipair (excess supply)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OmnipairPoolConfigArgs",
+      "docs": [
+        "Pool / IRM parameters passed from the client. Amounts are filled on-chain from vault balances."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "swap_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "half_life",
+            "type": "u64"
+          },
+          {
+            "name": "fixed_cf_bps",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "target_util_start_bps",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "target_util_end_bps",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "rate_half_life_ms",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_rate_bps",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "max_rate_bps",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "initial_rate_bps",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "params_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "min_liquidity_out",
+            "type": "u64"
+          },
+          {
+            "name": "lp_name",
+            "type": "string"
+          },
+          {
+            "name": "lp_symbol",
+            "type": "string"
+          },
+          {
+            "name": "lp_uri",
+            "type": "string"
           }
         ]
       }
