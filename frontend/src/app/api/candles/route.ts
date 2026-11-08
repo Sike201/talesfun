@@ -8,6 +8,8 @@ import {
   type CandleInterval,
 } from "@/lib/candles";
 
+export const dynamic = "force-dynamic";
+
 const MAX_ROWS = 25_000;
 
 const INTERVAL_HELP =
