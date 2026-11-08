@@ -11,6 +11,7 @@ function isTalesPath(pathname: string) {
     pathname === "/" ||
     pathname === "/launches" ||
     pathname === "/create" ||
+    pathname === "/docs" ||
     pathname.startsWith("/token/")
   );
 }

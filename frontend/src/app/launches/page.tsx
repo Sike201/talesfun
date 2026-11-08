@@ -342,108 +342,33 @@ export default function LaunchesPage() {
   const loading = tokens === null;
 
   return (
-    <div data-tales-page>
-      <section className="home-hero-wrap">
-        <div
-          className="home-hero-card"
-          style={{
-            position: "relative",
-            overflow: "hidden",
-            borderRadius: "1.25rem",
-            minHeight: 200,
-            height: "clamp(200px, 28vw, 260px)",
-            border: "none",
-            backgroundColor: "#000",
-          }}
-        >
-          <div
-            aria-hidden
+    <div data-tales-page className="flex min-h-[calc(100vh-3.5rem)] flex-col">
+      <div className="mx-auto w-full max-w-6xl flex-1 px-6 pb-12 pt-8">
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <h1
+            className={cn(fraunces.className, "font-fraunces text-[1.65rem] font-medium tracking-tight text-white sm:text-[1.85rem]")}
             style={{
-              position: "absolute",
-              inset: 0,
-              backgroundImage: "url(/explore-banner.png)",
-              backgroundSize: "cover",
-              backgroundPosition: "center",
-            }}
-          />
-          <div
-            aria-hidden
-            style={{
-              position: "absolute",
-              inset: 0,
-              background:
-                "linear-gradient(90deg, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.4) 55%, rgba(0,0,0,0.2) 100%)",
-            }}
-          />
-          <div
-            style={{
-              position: "relative",
-              zIndex: 1,
-              display: "flex",
-              height: "100%",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "1.5rem",
-              padding: "2rem clamp(1.25rem, 4vw, 2.75rem)",
+              fontFamily:
+                "var(--font-fraunces), Fraunces, ui-serif, Georgia, serif",
+              fontVariationSettings: '"SOFT" 55, "WONK" 1, "opsz" 144',
+              letterSpacing: "-0.03em",
             }}
           >
-            <div style={{ maxWidth: "28rem" }}>
-              <h1
-                className={cn(fraunces.className, "font-fraunces")}
-                style={{
-                  margin: 0,
-                  fontFamily:
-                    "var(--font-fraunces), Fraunces, ui-serif, Georgia, serif",
-                  fontVariationSettings: '"SOFT" 55, "WONK" 1, "opsz" 144',
-                  fontSize: "clamp(1.7rem, 3.4vw, 2.25rem)",
-                  fontWeight: 500,
-                  letterSpacing: "-0.03em",
-                  color: "#fff",
-                }}
-              >
-                Explore markets
-              </h1>
-              <p
-                style={{
-                  margin: "0.85rem 0 0",
-                  color: "rgba(255,255,255,0.7)",
-                  fontSize: "0.95rem",
-                  lineHeight: 1.5,
-                }}
-              >
-                New → Interest → Migrated into Omnipair
-              </p>
-            </div>
-            <div className="relative hidden sm:block">
-              <Search
-                size={13}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/35"
-              />
-              <input
-                type="text"
-                placeholder="Search tokens…"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                className="w-52 rounded-full bg-black/45 py-2 pl-8 pr-3 text-sm text-white placeholder:text-white/30 backdrop-blur-sm focus:outline-none"
-              />
-            </div>
+            Explore markets
+          </h1>
+          <div className="relative w-full sm:w-auto">
+            <Search
+              size={13}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/35"
+            />
+            <input
+              type="text"
+              placeholder="Search tokens…"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              className="w-full rounded-full bg-white/[0.06] py-2 pl-8 pr-3 text-sm text-white placeholder:text-white/30 focus:outline-none sm:w-56"
+            />
           </div>
-        </div>
-      </section>
-
-      <div className="mx-auto max-w-6xl px-6 pb-24 pt-8">
-        <div className="relative mb-5 sm:hidden">
-          <Search
-            size={13}
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/35"
-          />
-          <input
-            type="text"
-            placeholder="Search tokens…"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            className="w-full rounded-full bg-white/[0.06] py-2 pl-8 pr-3 text-sm text-white placeholder:text-white/30 focus:outline-none"
-          />
         </div>
 
         <div className="flex gap-5 overflow-x-auto pb-2">
@@ -481,6 +406,92 @@ export default function LaunchesPage() {
           />
         </div>
       </div>
+
+      <footer className="mx-auto mt-auto w-full max-w-6xl px-6 pb-10">
+        <div
+          className="relative overflow-hidden rounded-[1.25rem]"
+          style={{
+            minHeight: 200,
+            height: "clamp(200px, 28vw, 260px)",
+            backgroundColor: "#000",
+          }}
+        >
+          <div
+            aria-hidden
+            className="absolute inset-0"
+            style={{
+              backgroundImage: "url(/explore-banner.png)",
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }}
+          />
+          <div
+            aria-hidden
+            className="absolute inset-x-0 top-0 h-[55%]"
+            style={{
+              background:
+                "linear-gradient(to bottom, #000 0%, rgba(0,0,0,0.65) 35%, rgba(0,0,0,0.2) 75%, transparent 100%)",
+            }}
+          />
+          <div className="relative z-[1] flex h-full flex-col justify-between px-6 py-5 sm:px-8 sm:py-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="max-w-sm">
+                <p
+                  className={cn(
+                    fraunces.className,
+                    "font-fraunces text-[1.15rem] font-medium text-white sm:text-[1.3rem]"
+                  )}
+                  style={{
+                    fontFamily:
+                      "var(--font-fraunces), Fraunces, ui-serif, Georgia, serif",
+                    fontVariationSettings: '"SOFT" 55, "WONK" 1, "opsz" 72',
+                    letterSpacing: "-0.02em",
+                  }}
+                >
+                  Tales
+                </p>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-white/60">
+                  Bonding curves that graduate into Omnipair — long or short any
+                  market.
+                </p>
+              </div>
+              <nav className="flex flex-wrap gap-x-5 gap-y-2 text-[13px] font-medium">
+                <Link
+                  href="/docs"
+                  className="text-white/70 transition-colors hover:text-white"
+                >
+                  Docs
+                </Link>
+                <Link
+                  href="/create"
+                  className="text-white/70 transition-colors hover:text-white"
+                >
+                  Launch
+                </Link>
+                <a
+                  href="https://x.com/Talesdotfun"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-white/70 transition-colors hover:text-white"
+                >
+                  X
+                </a>
+                <a
+                  href="https://x.com/Talesdotfun"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-white/70 transition-colors hover:text-white"
+                >
+                  Community
+                </a>
+              </nav>
+            </div>
+            <p className="text-[11px] text-white/35">
+              © {new Date().getFullYear()} Tales
+            </p>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

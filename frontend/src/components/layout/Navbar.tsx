@@ -21,6 +21,7 @@ function isTalesPath(pathname: string) {
     pathname === "/" ||
     pathname === "/launches" ||
     pathname === "/create" ||
+    pathname === "/docs" ||
     pathname.startsWith("/token/")
   );
 }
@@ -64,8 +65,14 @@ export default function Navbar() {
       style={isTales ? undefined : { backgroundColor: "#F3F4F6" }}
     >
       <div className="max-w-6xl mx-auto flex items-center justify-between h-14 px-6">
-        <Link href="/" className="flex items-center gap-2 flex-shrink-0">
-          {!isTales && (
+        <Link href="/" className="flex items-center gap-2.5 flex-shrink-0">
+          {isTales ? (
+            <img
+              src="/tales-mark.png"
+              alt=""
+              className="h-7 w-7 select-none rounded-[6px]"
+            />
+          ) : (
             <img
               src="/higherdotrunlogo.png"
               alt=""
