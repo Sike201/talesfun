@@ -84,6 +84,16 @@ export async function fetchOmnipairPoolSnapshot(
   }
 
   try {
+    const { fetchDuskPoolSnapshot } = await import("./duskMarket");
+    return fetchDuskPoolSnapshot(connection, pairAddress, projectMintAddress, walletPubkey);
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Could not read the Dusk market",
+    };
+  }
+
+  try {
     const program = getReadOnlyOmnipairProgram(connection);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pair = await (program.account as any).pair.fetch(pairPk);

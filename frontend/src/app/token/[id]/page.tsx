@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import { MOCK_TOKENS } from "@/lib/mockData";
+import { DEMO_TOKEN, isDemoMarketMint } from "@/lib/demoMarket";
 import {
   formatUSD, formatNumber, shortenAddress, timeAgo, calcBondingCurveProgress,
   formatSolPerTokenPrice,
@@ -36,7 +37,8 @@ import { requestTokenPhaseSync } from "@/lib/requestTokenPhaseSync";
 import TradePanel from "@/components/ui/TradePanel";
 import TokenCandlestickChart from "@/components/ui/TokenCandlestickChart";
 import TradingInterface from "@/components/ui/TradingInterface";
-import OmnipairPoolCard from "@/components/ui/OmnipairPoolCard";
+import TokenGraduatedFeed from "@/components/token/TokenGraduatedFeed";
+import TokenGraduatedInfo from "@/components/token/TokenGraduatedInfo";
 import { Token, Trade } from "@/types";
 import {
   ExternalLink, Copy, CheckCircle2, ArrowUpRight
@@ -45,6 +47,7 @@ import toast from "react-hot-toast";
 import { cn } from "@/lib/utils";
 import { logTokenStateChainVsSupabase } from "@/lib/debugChainVsSupabase";
 import { logBondingPanelDebug } from "@/lib/bondingCurveQuote";
+import { readLocalTradeHistory } from "@/lib/recentActivityLocal";
 
 /** Row shape from Supabase / GET /api/tokens/[mint]/trades */
 type TradeHistoryRow = {
@@ -59,6 +62,43 @@ type TradeHistoryRow = {
   timestamp: string;
   source?: string | null;
 };
+
+function tradesFromLocalHistory(mint: string): Trade[] {
+  return readLocalTradeHistory(mint).map((row, i) => {
+    const solRaw = Number(row.sol_amount_raw ?? 0);
+    const tokenRaw = Number(row.token_amount_raw ?? 0);
+    const price =
+      typeof row.price_sol === "number" && row.price_sol > 0
+        ? row.price_sol
+        : tokenRaw > 0
+          ? solRaw / 1e9 / (tokenRaw / 1e6)
+          : 0;
+    return {
+      id: row.signature || `local-${i}`,
+      tokenMint: mint,
+      trader: row.wallet ?? "",
+      type: row.side === "sell" ? "sell" : "buy",
+      solAmount: Number.isFinite(solRaw) ? solRaw / 1e9 : 0,
+      tokenAmount: Number.isFinite(tokenRaw) ? tokenRaw / 1e6 : 0,
+      price,
+      timestamp: new Date(row.timestamp),
+      txSignature: row.signature,
+      source: "omnipair",
+    } satisfies Trade;
+  });
+}
+
+function mergeApiAndLocalTrades(apiRows: Trade[], mint: string): Trade[] {
+  const local = tradesFromLocalHistory(mint);
+  const bySig = new Map<string, Trade>();
+  for (const t of [...apiRows, ...local]) {
+    const key = t.txSignature || t.id;
+    bySig.set(key, t);
+  }
+  return [...bySig.values()].sort(
+    (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
+  );
+}
 
 function mapTradeHistoryRow(row: TradeHistoryRow): Trade {
   const solRaw = Number(row.sol_amount_raw ?? 0);
@@ -101,20 +141,20 @@ function TokenWalletBalancesRow({ mint, ticker }: { mint: string; ticker: string
   const { solBalanceDisplay, tokenBalanceDisplay, loading } = useWalletBalances(mint);
   if (!connected) return null;
   return (
-    <div className="flex flex-wrap gap-8 mb-4 text-sm bg-white rounded-lg px-4 py-3 border border-gray-100">
+    <div className="mb-4 flex flex-wrap gap-8 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm">
       <div>
-        <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold block mb-0.5">
+        <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-white/40">
           Wallet SOL
         </span>
-        <span className="font-semibold text-gray-900 tabular-nums">
+        <span className="font-semibold tabular-nums text-white">
           {loading ? "…" : `${solBalanceDisplay} SOL`}
         </span>
       </div>
       <div>
-        <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold block mb-0.5">
+        <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-white/40">
           Wallet {ticker}
         </span>
-        <span className="font-semibold text-gray-900 tabular-nums">
+        <span className="font-semibold tabular-nums text-white">
           {loading ? "…" : tokenBalanceDisplay}
         </span>
       </div>
@@ -126,6 +166,9 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   const { id } = use(params);
   const searchParams = useSearchParams();
   const leverageParam = searchParams.get("leverage");
+  const feedSectionParam = searchParams.get("section");
+  const feedInitialSection =
+    feedSectionParam === "liquidity" ? ("liquidity" as const) : undefined;
   const tradingInitialMode =
     leverageParam === "long" || leverageParam === "short" ? ("leverage" as const) : undefined;
   const tradingLeverageDir =
@@ -186,6 +229,15 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
 
     async function load() {
       setMetadataPending(false);
+      if (isDemoMarketMint(id) || id === DEMO_TOKEN.id) {
+        if (!cancelled) {
+          setToken(DEMO_TOKEN);
+          setMetadataPending(false);
+          setTrades([]);
+          setVolume24hLamportsStr("120000000000");
+        }
+        return;
+      }
       try {
         const mint = new PublicKey(id);
         const mintFromUrl = mint.toBase58();
@@ -288,7 +340,9 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
             walletAtQuery,
             rowCount: trData.length,
           });
-          setTrades(trData.map(mapTradeHistoryRow));
+          setTrades(
+            mergeApiAndLocalTrades(trData.map(mapTradeHistoryRow), canonicalMint)
+          );
         } else {
           console.warn(
             "[trade-history] initial load failed (trades not replaced)",
@@ -299,7 +353,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
               body: trWrap.body,
             }
           );
-          setTrades([]);
+          setTrades(tradesFromLocalHistory(canonicalMint));
         }
 
         const volData = volRes as {
@@ -410,8 +464,12 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
             walletAtQuery,
             rowCount: trData.length,
           });
-          setTrades(trData.map(mapTradeHistoryRow));
+          setTrades(
+            mergeApiAndLocalTrades(trData.map(mapTradeHistoryRow), apiMint)
+          );
         } else {
+          const local = tradesFromLocalHistory(apiMint);
+          if (local.length) setTrades(local);
           console.warn(
             "[trade-history] refetch trades HTTP/error — keeping existing Trade History rows",
             {
@@ -597,32 +655,32 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
 
   if (isGraduating) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-6 px-4">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-10 max-w-md w-full text-center">
+      <div data-tales-page className="flex min-h-screen flex-col items-center justify-center gap-6 px-4">
+        <div className="op-surface w-full max-w-md rounded-2xl p-10 text-center shadow-lg shadow-black/30">
           {token.imageUrl?.trim() ? (
             <div className="relative w-16 h-16 rounded-xl overflow-hidden mx-auto mb-4">
               <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
             </div>
           ) : (
-            <div className="w-16 h-16 rounded-xl bg-gray-100 flex items-center justify-center mx-auto mb-4">
-              <span className="text-xl font-bold text-gray-400">{token.ticker.slice(0, 2).toUpperCase()}</span>
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-xl bg-white/10">
+              <span className="text-xl font-bold text-white/45">{token.ticker.slice(0, 2).toUpperCase()}</span>
             </div>
           )}
-          <h2 className="text-xl font-bold text-gray-900 mb-1">{token.name}</h2>
-          <p className="text-sm text-gray-400 mb-6">{token.ticker} · Bonding target reached</p>
+          <h2 className="mb-1 text-xl font-semibold text-white">{token.name}</h2>
+          <p className="mb-6 text-sm text-white/45">{token.ticker} · Bonding target reached</p>
 
-          <div className="flex items-center justify-center gap-2 mb-4">
-            <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-            <span className="text-sm font-semibold text-amber-600">Graduating to GAMM pool…</span>
+          <div className="mb-4 flex items-center justify-center gap-2">
+            <div className="h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+            <span className="text-sm font-semibold text-white/90">Opening the Omnipair market…</span>
           </div>
 
-          <p className="text-xs text-gray-400 leading-relaxed">
+          <p className="text-xs leading-relaxed text-white/45">
             The bonding curve has filled. The graduation transaction is being
             submitted automatically. This page will refresh once the token is live
             on the GAMM pool.
           </p>
 
-          <div className="mt-6 text-xs text-gray-300">
+          <div className="mt-6 text-xs text-white/40">
             {token.solRaised.toFixed(2)} / {token.targetSOL} SOL raised
           </div>
         </div>
@@ -651,184 +709,127 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   }
 
   return (
-    <div className="min-h-screen px-4 sm:px-6 py-6">
-      <div className="max-w-7xl mx-auto">
+    <div data-tales-page className="min-h-screen">
+      <div className="token-page">
 
-        {/* ── Token header bar ── */}
-        <div className="bg-white rounded-lg p-4 mb-4">
-          <div className="flex items-center gap-4 flex-wrap">
-            {/* Token identity */}
-            <div className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex gap-3.5">
+            <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-white/[0.06]">
               {metadataPending && !token.imageUrl?.trim() ? (
-                <div className="absolute inset-0 bg-gray-200 animate-pulse" aria-hidden />
+                <div className="absolute inset-0 animate-pulse bg-white/10" aria-hidden />
               ) : token.imageUrl?.trim() ? (
                 <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
               ) : (
-                <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-gray-400" aria-hidden>
+                <div className="absolute inset-0 flex items-center justify-center text-lg font-semibold text-white/45">
                   {token.ticker.slice(0, 2).toUpperCase()}
                 </div>
               )}
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-gray-900">{token.ticker}</span>
-                <span className="text-sm text-gray-400">{token.name}</span>
+            <div className="min-w-0 pt-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-[1.65rem] font-semibold tracking-tight text-white">
+                  {token.name}
+                </h1>
               </div>
-              <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
-                {token.twitter && (
-                  <a href={`https://twitter.com/${token.twitter}`} target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">
-                    Twitter
-                  </a>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-white/55">
+                  ${token.ticker}
+                </span>
+                {isDemoMarketMint(token.mint) ? (
+                  <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-white/45">
+                    Demo
+                  </span>
+                ) : omnipairSpotLive ? (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-white/55">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src="/omnipair/trade.png" alt="" className="h-3 w-3 rounded-[2px]" />
+                    Omnipair
+                  </span>
+                ) : (
+                  <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-200/80">
+                    Pool pending
+                  </span>
                 )}
-                {token.website && (
-                  <a href={token.website} target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">
-                    Website
-                  </a>
-                )}
-                {token.telegram && (
-                  <a href={`https://t.me/${token.telegram}`} target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 transition-colors">
-                    Telegram
-                  </a>
-                )}
+                <button
+                  type="button"
+                  onClick={copyMint}
+                  className="ml-1 inline-flex items-center gap-1 font-mono text-[11px] text-white/35 transition-colors hover:text-white/65"
+                >
+                  {shortenAddress(token.mint, 4)}
+                  {copied ? <CheckCircle2 size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                </button>
               </div>
             </div>
+          </div>
+        </header>
 
-            {/* Price & stats */}
-            <div className="ml-auto flex items-center gap-6 text-sm flex-wrap">
-              <div>
-                <span className="text-xs text-gray-400 block">Market cap</span>
-                <span className="font-bold text-gray-900 text-lg">{formatUSD(displayMarketCapUsd)}</span>
-              </div>
-              <div className="hidden sm:flex items-center gap-4 text-xs text-gray-400">
-                <span>
-                  Price{" "}
-                  <span className="text-gray-700 font-medium">
-                    {priceUSD != null ? `$${priceUSD.toFixed(6)}` : `${displayPriceSol.toFixed(8)} SOL`}
-                  </span>
-                  {omnipairSpotLive ? (
-                    <span className="text-gray-300 font-normal ml-1">· pool</span>
-                  ) : null}
-                </span>
-                <span>
-                  Liq{" "}
-                  <span className="text-gray-700 font-medium">
-                    {displayLiqUsd != null ? formatUSD(displayLiqUsd) : "—"}
-                  </span>
-                </span>
-                <span>
-                  Volume (24h){" "}
-                  <span className="text-gray-700 font-medium">{volume24hUsdLabel}</span>
-                </span>
-                <span>
-                  Holders{" "}
-                  <span className="text-gray-700 font-medium">
-                    {holderLoading ? "…" : formatNumber(holderCount ?? 0)}
-                  </span>
-                </span>
-              </div>
-            </div>
+        <div className="token-stat-strip">
+          <div>
+            <p className="token-stat-label">Market cap</p>
+            <p className="token-stat-value">{formatUSD(displayMarketCapUsd)}</p>
+          </div>
+          <div>
+            <p className="token-stat-label">Price</p>
+            <p className="token-stat-value">
+              {priceUSD != null ? `$${priceUSD.toFixed(6)}` : `${displayPriceSol.toFixed(8)} SOL`}
+            </p>
+          </div>
+          <div>
+            <p className="token-stat-label">24h volume</p>
+            <p className="token-stat-value">{volume24hUsdLabel}</p>
+          </div>
+          <div>
+            <p className="token-stat-label">Liquidity</p>
+            <p className="token-stat-value">
+              {displayLiqUsd != null ? formatUSD(displayLiqUsd) : "—"}
+            </p>
+          </div>
+          <div>
+            <p className="token-stat-label">Holders</p>
+            <p className="token-stat-value">
+              {holderLoading ? "…" : formatNumber(holderCount ?? 0)}
+            </p>
           </div>
         </div>
 
-        <TokenWalletBalancesRow mint={token.mint} ticker={token.ticker} />
+        <div className="token-layout-main">
+          <div>
+            <TokenCandlestickChart mint={token.mint} ticker={token.ticker} solUsd={solUsd} />
 
-        {/* ── Main layout: chart+table left, trade+stats right ── */}
-        <div className="grid lg:grid-cols-[1fr_340px] gap-4 items-start lg:items-stretch">
-
-          {/* Left column — flex col so About stretches to match right side */}
-          <div className="flex flex-col gap-4">
-            <div className="flex-shrink-0">
-              <TokenCandlestickChart mint={token.mint} ticker={token.ticker} solUsd={solUsd} />
-            </div>
-
-            {/* Trade history — scrollable, taller */}
-            <div className="bg-white rounded-lg overflow-hidden flex-shrink-0">
-              <div className="grid grid-cols-8 gap-2 px-4 py-2.5 text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100 font-semibold sticky top-0 bg-white z-10">
-                <span>Time</span>
-                <span>Type</span>
-                <span>USD</span>
-                <span>{token.ticker}</span>
-                <span>SOL</span>
-                <span>MCap</span>
-                <span>Trader</span>
-                <span className="text-right">TX</span>
-              </div>
-              <div className="max-h-[calc(7*(2.5rem+1px))] overflow-y-auto">
-                {trades.length > 0 ? (
-                  trades.map(trade => (
-                    <div key={trade.id} className="grid grid-cols-8 gap-2 px-4 py-2.5 text-xs border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors">
-                      <span className="text-gray-400">{timeAgo(trade.timestamp)}</span>
-                      <span className={cn("font-semibold", trade.type === "buy" ? "text-green-500" : "text-red-500")}>
-                        {trade.type}
-                        {trade.source === "omnipair" ? (
-                          <span className="text-[9px] font-medium text-amber-700 ml-0.5">·GAMM</span>
-                        ) : null}
-                      </span>
-                      <span className="text-gray-700">
-                        {solUsd != null ? `$${(trade.price * solUsd).toFixed(2)}` : "—"}
-                      </span>
-                      <span className="text-gray-600">{formatNumber(trade.tokenAmount)}</span>
-                      <span className="text-gray-600">{trade.solAmount.toFixed(3)}</span>
-                      <span className="text-gray-600">{formatUSD(displayMarketCapUsd)}</span>
-                      <span className="text-gray-400 truncate" title={trade.trader}>
-                        {trade.trader ? shortenAddress(trade.trader) : "—"}
-                      </span>
-                      <span className="text-right">
-                        <a href={`https://solscan.io/tx/${trade.txSignature}`} target="_blank" rel="noopener noreferrer" className="text-gray-300 hover:text-gray-500">
-                          <ArrowUpRight size={11} />
-                        </a>
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="px-4 py-12 text-center text-sm text-gray-400">
-                    No trades in Supabase for this mint yet.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* About — flex-1 fills remaining height to match right column */}
-            <div className="bg-white rounded-lg p-5 flex-1">
-              <div className="flex items-center gap-3 mb-3">
-                <h2 className="text-sm font-bold text-gray-900">About</h2>
-                {token.twitter && (
-                  <a href={`https://twitter.com/${token.twitter}`} target="_blank" rel="noopener noreferrer"
-                    className="text-[11px] text-gray-400 hover:text-gray-700 transition-colors flex items-center gap-1">
-                    <ExternalLink size={10} /> Twitter
-                  </a>
-                )}
-                {token.website && (
-                  <a href={token.website} target="_blank" rel="noopener noreferrer"
-                    className="text-[11px] text-gray-400 hover:text-gray-700 transition-colors flex items-center gap-1">
-                    <ExternalLink size={10} /> Website
-                  </a>
-                )}
-                {token.telegram && (
-                  <a href={`https://t.me/${token.telegram}`} target="_blank" rel="noopener noreferrer"
-                    className="text-[11px] text-gray-400 hover:text-gray-700 transition-colors flex items-center gap-1">
-                    <ExternalLink size={10} /> Telegram
-                  </a>
-                )}
-              </div>
-              {metadataPending &&
-              !String(token.about || token.description || "").trim() ? (
-                <div className="space-y-2 animate-pulse" aria-hidden>
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-[92%]" />
-                  <div className="h-3 bg-gray-100 rounded w-4/5" />
-                </div>
-              ) : (
-                <p className="text-sm text-gray-600 leading-relaxed whitespace-pre-line">
-                  {token.about || token.description}
-                </p>
+            <TokenGraduatedFeed
+              token={token}
+              trades={trades}
+              solUsd={solUsd}
+              marketCapUsd={displayMarketCapUsd}
+              holderCount={holderCount}
+              holderLoading={holderLoading}
+              omnipairPoolSnapshot={
+                omnipairPoolLive ? omnipairSnapshot ?? null : null
+              }
+              poolReady={Boolean(
+                omnipairPoolLive &&
+                  omnipairSnapshot &&
+                  omnipairSnapshot.spotPriceSol > 0
               )}
-            </div>
+              initialSection={feedInitialSection}
+            />
+
+            <TokenGraduatedInfo
+              token={token}
+              copied={copied}
+              onCopyMint={copyMint}
+              omnipairSnapshot={omnipairPoolLive ? omnipairSnapshot : null}
+              creatorFeesSol={token.creatorFeesEarned}
+              showCreatorFees={Boolean(
+                connectedWallet &&
+                  (connectedWallet.toBase58() === token.creator ||
+                    connectedWallet.toBase58() === token.creatorFeeRecipient)
+              )}
+              metadataPending={metadataPending}
+            />
           </div>
 
-          {/* Right column */}
-          <div className="flex flex-col gap-4">
-            {/* Trade panel */}
+          <div className="token-layout-rail flex flex-col gap-4">
             <TradingInterface
               token={token}
               spotPriceSol={
@@ -845,142 +846,83 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
               initialLeverageDirection={tradingLeverageDir}
             />
 
-            {omnipairPoolLive ? (
-              <OmnipairPoolCard
-                ticker={token.ticker}
-                snapshot={omnipairSnapshot}
-                loading={omnipairPoolLoading}
-                error={omnipairPoolError}
-              />
-            ) : null}
+            <TokenWalletBalancesRow mint={token.mint} ticker={token.ticker} />
 
-            {!omnipairPoolLive ? (
-              <div className="rounded-lg border border-amber-100 bg-amber-50/80 px-3 py-3 text-xs text-amber-900 leading-relaxed">
-                <p className="font-semibold mb-1">Omnipair pool not linked on-chain yet</p>
-                <p className="text-amber-800/90 mb-2">
-                  Graduation is complete, but <code className="text-[10px]">gamm_pool</code> is still unset.
-                  Run <code className="text-[10px]">bootstrap_omnipair_pool</code> to move vault liquidity into a
-                  real Omnipair pair (requires ~0.2 SOL + rent in the connected wallet for Omnipair fees).
+            {!omnipairPoolLive && !isDemoMarketMint(token.mint) ? (
+              <div className="rounded-xl bg-white/[0.04] px-3 py-3 text-xs leading-relaxed text-white/55">
+                <p className="mb-1 font-semibold text-white/90">Omnipair market not open yet</p>
+                <p className="mb-2">
+                  The curve is finished. Opening the market releases the reserves, creates the Dusk pool, and seeds it. The wallet pays about 0.2 SOL plus rent.
                 </p>
-                {graduated ? (
-                  <button
-                    type="button"
-                    disabled={
-                      omnipairBootstrapBusy ||
-                      !walletAdapter.connected ||
+                <button
+                  type="button"
+                  disabled={
+                    omnipairBootstrapBusy ||
+                    !walletAdapter.connected ||
+                    !walletAdapter.publicKey ||
+                    !walletAdapter.signTransaction
+                  }
+                  onClick={async () => {
+                    if (
                       !walletAdapter.publicKey ||
                       !walletAdapter.signTransaction
+                    ) {
+                      toast.error("Connect a wallet that can sign transactions");
+                      return;
                     }
-                    onClick={async () => {
-                      if (
-                        !walletAdapter.publicKey ||
-                        !walletAdapter.signTransaction
-                      ) {
-                        toast.error("Connect a wallet that can sign transactions");
-                        return;
-                      }
-                      const lpUri =
-                        token.metadataUri?.trim().startsWith("http")
-                          ? token.metadataUri!.trim()
-                          : `https://higher.run/token/${encodeURIComponent(token.mint)}`;
-                      setOmnipairBootstrapBusy(true);
-                      try {
-                        const anchorWallet = {
-                          publicKey: walletAdapter.publicKey,
-                          signTransaction: walletAdapter.signTransaction.bind(walletAdapter),
-                          signAllTransactions:
-                            walletAdapter.signAllTransactions?.bind(walletAdapter) ??
-                            (async <T,>(txs: T[]) => {
-                              const out: T[] = [];
-                              for (const t of txs) {
-                                out.push(await walletAdapter.signTransaction!(t as never));
-                              }
-                              return out;
-                            }),
-                        } as AnchorWallet;
-                        const sig = await sendBootstrapOmnipairPoolTx({
-                          connection,
-                          wallet: anchorWallet,
-                          mint: new PublicKey(token.mint),
-                          ticker: token.ticker,
-                          lpUri,
-                        });
-                        toast.success(`Omnipair bootstrap submitted: ${sig.slice(0, 8)}…`);
-                        const program = getReadOnlyProgram(connection);
-                        const [pda] = getTokenStatePDA(new PublicKey(token.mint));
-                        const stateRes = await (program.account as any).tokenState.fetch(pda);
-                        const su =
-                          typeof solUsd === "number" && solUsd > 0 ? solUsd : undefined;
-                        const next = tokenStateToToken(stateRes, token.mint, { solUsd: su });
-                        setToken(applyTokenMarketCapUsd(next, solUsd));
-                        void requestTokenPhaseSync(token.mint);
-                      } catch (e) {
-                        console.error(e);
-                        toast.error(
-                          e instanceof Error ? e.message : "Omnipair bootstrap failed"
-                        );
-                      } finally {
-                        setOmnipairBootstrapBusy(false);
-                      }
-                    }}
-                    className="mb-2 w-full rounded-md bg-amber-700 px-3 py-2 text-[11px] font-semibold text-white hover:bg-amber-800 disabled:opacity-40 disabled:pointer-events-none"
-                  >
-                    {omnipairBootstrapBusy ? "Bootstrapping…" : "Bootstrap Omnipair pool"}
-                  </button>
-                ) : null}
-                <p className="text-[10px] text-amber-700/80 font-mono">
-                  Omnipair program: {OMNIPAIR_PROGRAM_ID_STR}
+                    const lpUri =
+                      token.metadataUri?.trim().startsWith("http")
+                        ? token.metadataUri!.trim()
+                        : `https://higher.run/token/${encodeURIComponent(token.mint)}`;
+                    setOmnipairBootstrapBusy(true);
+                    try {
+                      const anchorWallet = {
+                        publicKey: walletAdapter.publicKey,
+                        signTransaction: walletAdapter.signTransaction.bind(walletAdapter),
+                        signAllTransactions:
+                          walletAdapter.signAllTransactions?.bind(walletAdapter) ??
+                          (async <T,>(txs: T[]) => {
+                            const out: T[] = [];
+                            for (const t of txs) {
+                              out.push(await walletAdapter.signTransaction!(t as never));
+                            }
+                            return out;
+                          }),
+                      } as AnchorWallet;
+                      const sig = await sendBootstrapOmnipairPoolTx({
+                        connection,
+                        wallet: anchorWallet,
+                        mint: new PublicKey(token.mint),
+                        ticker: token.ticker,
+                        lpUri,
+                      });
+                      toast.success(`Omnipair bootstrap submitted: ${sig.slice(0, 8)}…`);
+                      const program = getReadOnlyProgram(connection);
+                      const [pda] = getTokenStatePDA(new PublicKey(token.mint));
+                      const stateRes = await (program.account as any).tokenState.fetch(pda);
+                      const su =
+                        typeof solUsd === "number" && solUsd > 0 ? solUsd : undefined;
+                      const next = tokenStateToToken(stateRes, token.mint, { solUsd: su });
+                      setToken(applyTokenMarketCapUsd(next, solUsd));
+                      void requestTokenPhaseSync(token.mint);
+                    } catch (e) {
+                      console.error(e);
+                      toast.error(
+                        e instanceof Error ? e.message : "Omnipair bootstrap failed"
+                      );
+                    } finally {
+                      setOmnipairBootstrapBusy(false);
+                    }
+                  }}
+                  className="tales-trade-cta !rounded-lg !py-2.5 !text-xs disabled:opacity-40"
+                >
+                  {omnipairBootstrapBusy ? "Opening market…" : "Open Omnipair market"}
+                </button>
+                <p className="mt-2 font-mono text-[10px] text-amber-200/60">
+                  {OMNIPAIR_PROGRAM_ID_STR}
                 </p>
               </div>
             ) : null}
-
-            <div className="bg-white rounded-lg p-4 space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-gray-400">Creator fees (on-chain accumulator)</span>
-                <span className="font-semibold text-gray-700 tabular-nums">
-                  {token.creatorFeesEarned?.toFixed(4) ?? "—"} SOL
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400">Volume (24h) est. fee (bonding history)</span>
-                <span className="text-gray-700 font-medium tabular-nums">
-                  {solUsd != null && solUsd > 0
-                    ? formatUSD(volume24hSol * solUsd * 0.01)
-                    : "—"}
-                </span>
-              </div>
-            </div>
-
-            {/* Holder Distribution (mock) */}
-            <div className="bg-white rounded-lg p-4">
-              <h3 className="text-sm font-bold text-gray-900 mb-3">Holder Distribution</h3>
-              <div className="space-y-2 text-xs">
-                {[
-                  { addr: "FD7Y...", pct: "25.468%" },
-                  { addr: "KpXr...", pct: "20.078%" },
-                  { addr: "6eeY...", pct: "13.035%" },
-                  { addr: "D3ki...", pct: "13.033%" },
-                  { addr: "HDhl...", pct: "6.972%" },
-                  { addr: "7kw5...", pct: "6.329%" },
-                ].map((h, i) => (
-                  <div key={h.addr} className="flex items-center justify-between">
-                    <span className="text-gray-400">{i + 1}. {h.addr}</span>
-                    <span className="text-gray-700 font-medium">{h.pct}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Contract */}
-            <div className="bg-white rounded-lg p-4">
-              <h3 className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-2">Contract</h3>
-              <div className="flex items-center gap-2">
-                <code className="text-xs text-gray-500 font-mono flex-1 truncate">{token.mint}</code>
-                <button onClick={copyMint} className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0">
-                  {copied ? <CheckCircle2 size={13} className="text-green-500" /> : <Copy size={13} />}
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -1048,97 +990,97 @@ function BondingPhasePage({
   ]);
 
   return (
-    <div className="min-h-screen px-6 py-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex items-center gap-2 text-xs text-gray-400 mb-6">
-          <Link href="/launches" className="hover:text-green-500 transition-colors">Explore</Link>
+    <div data-tales-page className="min-h-screen px-6 py-8">
+      <div className="token-page mx-auto max-w-6xl">
+        <div className="mb-6 flex items-center gap-2 text-xs text-white/40">
+          <Link href="/launches" className="transition-colors hover:text-emerald-400">Explore</Link>
           <span>/</span>
-          <span className="text-gray-600">{token.name}</span>
+          <span className="text-white/60">{token.name}</span>
         </div>
 
         <div className="flex items-center gap-4 mb-6">
-          <div className="relative w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
+          <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-white/10">
             {metadataPending && !token.imageUrl?.trim() ? (
-              <div className="absolute inset-0 bg-gray-200 animate-pulse" aria-hidden />
+              <div className="absolute inset-0 animate-pulse bg-white/10" aria-hidden />
             ) : token.imageUrl?.trim() ? (
               <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
             ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-gray-400" aria-hidden>
+              <div className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white/45" aria-hidden>
                 {token.ticker.slice(0, 2).toUpperCase()}
               </div>
             )}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg font-bold text-gray-900">{token.name}</h1>
-              <span className="text-sm text-gray-400">{token.ticker}</span>
-              <span className="bg-yellow-100 text-yellow-700 text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase">Live</span>
+              <h1 className="text-lg font-semibold text-white">{token.name}</h1>
+              <span className="text-sm text-white/40">{token.ticker}</span>
+              <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Live</span>
             </div>
           </div>
         </div>
 
         <div className="mb-6">
           <div className="flex items-center justify-between text-xs mb-1.5">
-            <span className="text-green-600 font-semibold">
+            <span className="font-semibold text-emerald-400">
               {solUsd != null ? formatUSD(token.solRaised * solUsd) : `${token.solRaised} SOL`}
             </span>
-            <span className="text-gray-400">{safeProgress.toFixed(0)}%</span>
-            <span className="text-gray-400">{raiseGoal} <span className="text-gray-300">goal</span></span>
+            <span className="text-white/40">{safeProgress.toFixed(0)}%</span>
+            <span className="text-white/40">{raiseGoal} <span className="text-white/30">goal</span></span>
           </div>
-          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${safeProgress}%` }} />
+          <div className="h-2 overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${safeProgress}%` }} />
           </div>
         </div>
 
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-5">
             <TokenCandlestickChart mint={token.mint} ticker={token.ticker} solUsd={solUsd} />
-            <div className="bg-white rounded-lg p-6">
-              <h2 className="text-sm font-bold text-gray-900 mb-4">About</h2>
+            <div className="op-surface rounded-xl p-6">
+              <h2 className="mb-4 text-sm font-semibold text-white">About</h2>
               {metadataPending &&
               !String(token.about || token.description || "").trim() ? (
                 <div className="space-y-2 animate-pulse" aria-hidden>
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-[92%]" />
-                  <div className="h-3 bg-gray-100 rounded w-4/5" />
+                  <div className="h-3 w-full rounded bg-white/10" />
+                  <div className="h-3 w-[92%] rounded bg-white/10" />
+                  <div className="h-3 w-4/5 rounded bg-white/10" />
                 </div>
               ) : (
-                <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line">
+                <div className="whitespace-pre-line text-sm leading-relaxed text-white/60">
                   {token.about || token.description}
                 </div>
               )}
             </div>
-            <div className="bg-white rounded-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 min-w-0">
-                  <h2 className="text-sm font-bold text-gray-900">Trade History</h2>
+            <div className="op-surface overflow-hidden rounded-xl">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-6 py-4">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h2 className="text-sm font-semibold text-white">Trade History</h2>
                   {postTradeSyncing && (
                     <span className="text-[10px] text-amber-600 font-medium shrink-0">
                       Updating market data…
                     </span>
                   )}
                 </div>
-                               <span className="text-[10px] text-gray-400 tabular-nums">
+                  <span className="text-[10px] tabular-nums text-white/40">
                   Volume (24h){" "}
-                  <span className="text-gray-600 font-semibold">{volume24hUsdLabel}</span>
+                  <span className="font-semibold text-white/70">{volume24hUsdLabel}</span>
                 </span>
               </div>
               {trades.length > 0 ? (
                 <div className="max-h-[calc(7*(3rem+1px))] overflow-y-auto">
                   {trades.map((trade: any) => (
-                    <div key={trade.id} className="flex items-center gap-4 px-6 py-3 text-xs border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                    <div key={trade.id} className="flex items-center gap-4 border-b border-white/[0.06] px-6 py-3 text-xs last:border-0 hover:bg-white/[0.03]">
                       <span className={cn("font-semibold w-8 shrink-0", trade.type === "buy" ? "text-green-500" : "text-red-500")}>{trade.type}</span>
-                      <span className="text-gray-600 flex-1 min-w-0">{formatNumber(trade.tokenAmount)} {token.ticker}</span>
-                      <span className="text-gray-600 shrink-0 tabular-nums">{trade.solAmount.toFixed(4)} SOL</span>
-                      <span className="text-gray-400 shrink-0" title={trade.trader}>
+                      <span className="min-w-0 flex-1 text-white/60">{formatNumber(trade.tokenAmount)} {token.ticker}</span>
+                      <span className="shrink-0 tabular-nums text-white/60">{trade.solAmount.toFixed(4)} SOL</span>
+                      <span className="shrink-0 text-white/40" title={trade.trader}>
                         {trade.trader ? shortenAddress(trade.trader) : "—"}
                       </span>
-                      <span className="text-gray-400 shrink-0">{timeAgo(trade.timestamp)}</span>
+                      <span className="shrink-0 text-white/40">{timeAgo(trade.timestamp)}</span>
                       <a
                         href={`https://solscan.io/tx/${trade.txSignature}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-gray-300 hover:text-gray-500 shrink-0"
+                        className="shrink-0 text-white/30 hover:text-white/60"
                         aria-label="View transaction"
                       >
                         <ArrowUpRight size={11} />
@@ -1147,7 +1089,7 @@ function BondingPhasePage({
                   ))}
                 </div>
               ) : (
-                <div className="px-6 py-10 text-center text-sm text-gray-400">
+                <div className="px-6 py-10 text-center text-sm text-white/40">
                   No trades in Supabase for this mint yet.
                 </div>
               )}
@@ -1155,28 +1097,28 @@ function BondingPhasePage({
           </div>
 
           <div className="space-y-4">
-            <div className="bg-white rounded-lg overflow-hidden">
+            <div className="op-surface overflow-hidden rounded-xl">
               <TradePanel token={token} />
             </div>
-            <div className="bg-white rounded-lg p-5">
-              <h3 className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-3">Details</h3>
+            <div className="op-surface rounded-xl p-5">
+              <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-white/40">Details</h3>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between gap-2">
-                  <span className="text-gray-400 shrink-0">Price</span>
-                  <span className="font-bold text-gray-900 text-right tabular-nums">
+                  <span className="shrink-0 text-white/40">Price</span>
+                  <span className="text-right font-semibold tabular-nums text-white">
                     {formatSolPerTokenPrice(token.currentPrice)}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Market Cap</span>
-                  <span className="font-bold text-gray-900 tabular-nums">
+                  <span className="text-white/40">Market Cap</span>
+                  <span className="font-semibold tabular-nums text-white">
                     {formatUSD(displayMcapUsd)}
                   </span>
                 </div>
-                <div className="flex justify-between"><span className="text-gray-400">Raise Goal</span><span className="text-gray-600">{raiseGoal}</span></div>
+                <div className="flex justify-between"><span className="text-white/40">Raise Goal</span><span className="text-white/60">{raiseGoal}</span></div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Supply</span>
-                  <span className="text-gray-600 tabular-nums">
+                  <span className="text-white/40">Supply</span>
+                  <span className="tabular-nums text-white/60">
                     {Number(token.totalSupply).toLocaleString("en-US", {
                       maximumFractionDigits: 0,
                       minimumFractionDigits: 0,
@@ -1184,28 +1126,28 @@ function BondingPhasePage({
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Holders</span>
-                  <span className="text-gray-600 font-medium tabular-nums">
+                  <span className="text-white/40">Holders</span>
+                  <span className="font-medium tabular-nums text-white/60">
                     {holderLoading ? "…" : formatNumber(holderCount ?? 0)}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Volume (24h)</span>
-                  <span className="text-gray-600 font-medium tabular-nums">
+                  <span className="text-white/40">Volume (24h)</span>
+                  <span className="font-medium tabular-nums text-white/60">
                     {volume24hUsdLabel}
                     {solUsd == null && volume24hSol > 0 ? ` (${volume24hSol.toFixed(2)} SOL)` : ""}
                   </span>
                 </div>
               </div>
             </div>
-            <div className="bg-white rounded-lg p-5">
-              <h3 className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-2">Contract</h3>
+            <div className="op-surface rounded-xl p-5">
+              <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-white/40">Contract</h3>
               <div className="flex items-center gap-2">
-                <code className="text-xs text-gray-500 font-mono flex-1 truncate">{token.mint}</code>
-                <button onClick={copyMint} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <code className="flex-1 truncate font-mono text-xs text-white/50">{token.mint}</code>
+                <button onClick={copyMint} className="text-white/40 transition-colors hover:text-white/70">
                   {copied ? <CheckCircle2 size={13} className="text-green-500" /> : <Copy size={13} />}
                 </button>
-                <a href={`https://explorer.solana.com/address/${token.mint}?cluster=devnet`} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-gray-600 transition-colors">
+                <a href={`https://explorer.solana.com/address/${token.mint}?cluster=devnet`} target="_blank" rel="noopener noreferrer" className="text-white/40 transition-colors hover:text-white/70">
                   <ExternalLink size={13} />
                 </a>
               </div>

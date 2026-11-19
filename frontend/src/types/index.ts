@@ -73,6 +73,19 @@ export const GRADUATION_SOL: number = (() => {
   }
   return 85;
 })();
+
+/**
+ * SOL reserved/budgeted for Omnipair pair creation at bootstrap.
+ * Protocol fee is ~0.2 SOL; we budget 0.25 SOL headroom (+ rent paid by deployer).
+ */
+export const OMNIPAIR_PAIR_FEE_SOL: number = (() => {
+  const raw = process.env.NEXT_PUBLIC_OMNIPAIR_PAIR_FEE_SOL;
+  if (raw != null && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0.25;
+})();
 export const CREATOR_FEE_BPS = 50;
 export const LP_FEE_BPS = 50;
 export const TOTAL_FEE_BPS = 100;

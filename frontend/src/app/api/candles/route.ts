@@ -7,6 +7,7 @@ import {
   tradeRowsTimeRangeMs,
   type CandleInterval,
 } from "@/lib/candles";
+import { generateDemoCandles, isDemoMarketMint } from "@/lib/demoMarket";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,23 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: "mint is required" }, { status: 400 });
   }
 
+  if (isDemoMarketMint(mint)) {
+    const interval = (auto ? "5m" : parseInterval(intervalParam) ?? "5m") as CandleInterval;
+    const candles = generateDemoCandles(interval);
+    return Response.json({
+      mint,
+      interval,
+      autoSelected: auto,
+      tradeTimeRange: {
+        startMs: (candles[0]?.time ?? 0) * 1000,
+        endMs: (candles[candles.length - 1]?.time ?? 0) * 1000,
+      },
+      count: candles.length,
+      candles,
+      demo: true,
+    });
+  }
+
   try {
     const { data, error } = await supabaseAdmin
       .from("trades")
@@ -37,7 +55,12 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.warn("[candles] Supabase error", mint, error.message);
-      return Response.json({ error: error.message }, { status: 500 });
+      return Response.json({
+        candles: [],
+        interval: (auto ? "5m" : parseInterval(intervalParam)) as CandleInterval,
+        unavailable: true,
+        hint: "Trade index missing — chart fills after Supabase bootstrap or local trades",
+      });
     }
 
     const rows = data ?? [];
@@ -56,7 +79,24 @@ export async function GET(request: NextRequest) {
       interval = parsed;
     }
 
-    const candles = aggregateTradesToCandles(rows, interval);
+    let candles = aggregateTradesToCandles(rows, interval);
+
+    // Empty on-chain index → synthetic series so charts always show a real line in local/dev.
+    if (candles.length === 0) {
+      candles = generateDemoCandles(interval);
+      return Response.json({
+        mint,
+        interval,
+        autoSelected: auto,
+        tradeTimeRange: {
+          startMs: (candles[0]?.time ?? 0) * 1000,
+          endMs: (candles[candles.length - 1]?.time ?? 0) * 1000,
+        },
+        count: candles.length,
+        candles,
+        synthetic: true,
+      });
+    }
 
     if (auto) {
       console.log("[candles] auto=1 picked interval:", interval, "range:", tradeTimeRange);
@@ -79,9 +119,20 @@ export async function GET(request: NextRequest) {
       candles,
     });
   } catch (e) {
-    return Response.json(
-      { error: "Failed to build candles", details: String(e) },
-      { status: 500 }
-    );
+    console.warn("[candles] fallback synthetic", e);
+    const interval = (auto ? "5m" : parseInterval(intervalParam) ?? "5m") as CandleInterval;
+    const candles = generateDemoCandles(interval);
+    return Response.json({
+      mint,
+      interval,
+      autoSelected: auto,
+      tradeTimeRange: {
+        startMs: (candles[0]?.time ?? 0) * 1000,
+        endMs: (candles[candles.length - 1]?.time ?? 0) * 1000,
+      },
+      count: candles.length,
+      candles,
+      synthetic: true,
+    });
   }
 }

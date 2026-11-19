@@ -27,7 +27,12 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error("[volume24h] Supabase error:", error.message);
-      return Response.json({ error: error.message }, { status: 500 });
+      return Response.json({
+        since,
+        byMint: {},
+        unavailable: true,
+        hint: "Run frontend/supabase/bootstrap.sql in Supabase SQL editor",
+      });
     }
 
     const rows = data ?? [];

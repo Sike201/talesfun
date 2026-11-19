@@ -3,8 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
 
-const HOME_BG = "#000000";
-const DEFAULT_BG = "#F3F4F6";
+const APP_BG = "#0a0a0a";
 
 function isTalesPath(pathname: string) {
   return (
@@ -23,16 +22,14 @@ export default function HomeBodyClass() {
   useEffect(() => {
     const html = document.documentElement;
     const body = document.body;
+    body.style.backgroundColor = APP_BG;
+    html.style.backgroundColor = APP_BG;
     if (isTales) {
       html.classList.add("home-landing");
       body.classList.add("home-landing");
-      body.style.backgroundColor = HOME_BG;
-      html.style.backgroundColor = HOME_BG;
     } else {
       html.classList.remove("home-landing");
       body.classList.remove("home-landing");
-      body.style.backgroundColor = DEFAULT_BG;
-      html.style.backgroundColor = DEFAULT_BG;
     }
   }, [isTales]);
 

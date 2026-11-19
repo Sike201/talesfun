@@ -33,6 +33,10 @@ declare_id!("72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv");
 /// Must match `NEXT_PUBLIC_OMNIPAIR_PROGRAM_ID` / `OMNIPAIR_PROGRAM_ID` in the frontend.
 pub const OMNIPAIR_PROGRAM_ID: Pubkey = pubkey!("GP5yjX245UK28bLJQgG4WSHGT9ZyeoC6QpgwWAjekWv4");
 
+/// Omnipair V2 (Dusk) market program. Graduation links `gamm_pool` to a market
+/// this program owns. Legacy `bootstrap_omnipair_pool` still targets V1.
+pub const DUSK_PROGRAM_ID: Pubkey = pubkey!("DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj");
+
 pub const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 pub const MPL_TOKEN_METADATA_ID: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
@@ -704,6 +708,149 @@ pub mod higher_launchpad {
 
         Ok(())
     }
+
+    /// Move terminal-price reserves to the signer. Does not CPI a pool.
+    /// The client then creates the Dusk market with `@omnipair/dusk-sdk` and calls `link_dusk_market`.
+    pub fn release_graduation_reserves(ctx: Context<ReleaseGraduationReserves>) -> Result<()> {
+        let token_state = &mut ctx.accounts.token_state;
+        require!(
+            token_state.phase == TokenPhase::Graduated,
+            LaunchpadError::NotGraduated
+        );
+        require_keys_eq!(
+            token_state.gamm_pool,
+            Pubkey::default(),
+            LaunchpadError::GammPoolAlreadyLinked
+        );
+        require_keys_eq!(token_state.mint, ctx.accounts.mint.key(), LaunchpadError::InvalidMint);
+
+        let rent_min = sol_vault_rent_exempt_min()?;
+        let vault_lamports = ctx.accounts.sol_vault.lamports();
+        let spendable_lamports = vault_lamports
+            .checked_sub(rent_min)
+            .ok_or(LaunchpadError::MathOverflow)?;
+
+        let v_sol = token_state.virtual_sol_reserve;
+        let v_token = token_state.virtual_token_reserve;
+        let initial_vault_tokens = ctx.accounts.token_vault.amount;
+
+        require!(spendable_lamports > 0, LaunchpadError::InsufficientLiquidity);
+        require!(initial_vault_tokens > 0, LaunchpadError::InsufficientLiquidity);
+        require!(v_sol > 0 && v_token > 0, LaunchpadError::MathOverflow);
+
+        let token_amount_for_pool =
+            token_amount_for_omnipair_at_terminal_price(spendable_lamports, v_sol, v_token)?;
+        require!(token_amount_for_pool > 0, LaunchpadError::InsufficientLiquidity);
+        require!(
+            token_amount_for_pool <= initial_vault_tokens,
+            LaunchpadError::BootstrapPoolTokenMismatch
+        );
+
+        let leftover_burn = initial_vault_tokens
+            .checked_sub(token_amount_for_pool)
+            .ok_or(LaunchpadError::MathOverflow)?;
+
+        let mint_key = token_state.mint;
+        let vault_seeds: &[&[u8]] = &[b"sol_vault", mint_key.as_ref(), &[token_state.vault_bump]];
+        let signer_seeds: &[&[&[u8]]] = &[vault_seeds];
+
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.sol_vault.to_account_info(),
+                    to: ctx.accounts.deployer_wsol.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            spendable_lamports,
+        )?;
+
+        let sync_ix = anchor_spl::token::spl_token::instruction::sync_native(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.deployer_wsol.key(),
+        )?;
+        invoke(
+            &sync_ix,
+            &[
+                ctx.accounts.deployer_wsol.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                Transfer {
+                    from: ctx.accounts.token_vault.to_account_info(),
+                    to: ctx.accounts.deployer_token.to_account_info(),
+                    authority: ctx.accounts.sol_vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            token_amount_for_pool,
+        )?;
+
+        if leftover_burn > 0 {
+            token::burn(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.key(),
+                    Burn {
+                        mint: ctx.accounts.mint.to_account_info(),
+                        from: ctx.accounts.token_vault.to_account_info(),
+                        authority: ctx.accounts.sol_vault.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                leftover_burn,
+            )?;
+        }
+
+        token_state.real_sol_reserve = 0;
+        token_state.real_token_reserve = 0;
+
+        emit!(GraduationReservesReleased {
+            mint: token_state.mint,
+            deployer: ctx.accounts.deployer.key(),
+            sol_amount: spendable_lamports,
+            token_amount: token_amount_for_pool,
+            tokens_burned: leftover_burn,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    /// Record the Dusk market created by the client SDK. The account must be owned by Dusk.
+    pub fn link_dusk_market(ctx: Context<LinkDuskMarket>) -> Result<()> {
+        let token_state = &mut ctx.accounts.token_state;
+        require!(
+            token_state.phase == TokenPhase::Graduated,
+            LaunchpadError::NotGraduated
+        );
+        require_keys_eq!(
+            token_state.gamm_pool,
+            Pubkey::default(),
+            LaunchpadError::GammPoolAlreadyLinked
+        );
+        require_keys_eq!(token_state.mint, ctx.accounts.mint.key(), LaunchpadError::InvalidMint);
+        require_keys_eq!(
+            *ctx.accounts.market.owner,
+            DUSK_PROGRAM_ID,
+            LaunchpadError::InvalidDuskMarket
+        );
+
+        token_state.gamm_pool = ctx.accounts.market.key();
+
+        emit!(DuskMarketLinked {
+            mint: token_state.mint,
+            market: ctx.accounts.market.key(),
+            deployer: ctx.accounts.deployer.key(),
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        Ok(())
+    }
 }
 
 /// Tokens to pair with `spendable_lamports` so pool ratio matches terminal bonding spot
@@ -1040,6 +1187,81 @@ pub struct BootstrapOmnipairPool<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
+#[derive(Accounts)]
+pub struct ReleaseGraduationReserves<'info> {
+    #[account(
+        mut,
+        seeds = [b"token_state", token_state.mint.as_ref()],
+        bump = token_state.bump
+    )]
+    pub token_state: Account<'info, TokenState>,
+
+    #[account(mut, address = token_state.mint)]
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [b"sol_vault", token_state.mint.as_ref()],
+        bump = token_state.vault_bump
+    )]
+    pub sol_vault: SystemAccount<'info>,
+
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = sol_vault,
+    )]
+    pub token_vault: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub deployer: Signer<'info>,
+
+    #[account(address = anchor_spl::token::spl_token::native_mint::ID)]
+    pub wsol_mint: Account<'info, Mint>,
+
+    #[account(
+        init_if_needed,
+        payer = deployer,
+        associated_token::mint = wsol_mint,
+        associated_token::authority = deployer,
+    )]
+    pub deployer_wsol: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = deployer,
+        associated_token::mint = mint,
+        associated_token::authority = deployer,
+    )]
+    pub deployer_token: Account<'info, TokenAccount>,
+
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+}
+
+#[derive(Accounts)]
+pub struct LinkDuskMarket<'info> {
+    #[account(
+        mut,
+        seeds = [b"token_state", token_state.mint.as_ref()],
+        bump = token_state.bump
+    )]
+    pub token_state: Account<'info, TokenState>,
+
+    #[account(address = token_state.mint)]
+    pub mint: Account<'info, Mint>,
+
+    /// CHECK: ownership is checked against `DUSK_PROGRAM_ID`.
+    pub market: UncheckedAccount<'info>,
+
+    /// CHECK: pinned Dusk program id.
+    #[account(address = DUSK_PROGRAM_ID)]
+    pub dusk_program: UncheckedAccount<'info>,
+
+    pub deployer: Signer<'info>,
+}
+
 // ─── State accounts ────────────────────────────────────────────────────────────
 
 #[account]
@@ -1148,6 +1370,24 @@ pub struct FeesClaimed {
     pub mint: Pubkey,
     pub claimer: Pubkey,
     pub amount: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct GraduationReservesReleased {
+    pub mint: Pubkey,
+    pub deployer: Pubkey,
+    pub sol_amount: u64,
+    pub token_amount: u64,
+    pub tokens_burned: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct DuskMarketLinked {
+    pub mint: Pubkey,
+    pub market: Pubkey,
+    pub deployer: Pubkey,
     pub timestamp: i64,
 }
 
@@ -1299,6 +1539,8 @@ pub enum LaunchpadError {
     InvalidPlatformFeeRecipient,
     #[msg("GAMM pool is already linked (gamm_pool is non-default)")]
     GammPoolAlreadyLinked,
+    #[msg("Market account is not owned by the Dusk program")]
+    InvalidDuskMarket,
     #[msg("Invalid Omnipair params hash for pool configuration")]
     InvalidOmnipairParamsHash,
     #[msg("LP metadata URI must start with http:// or https://")]

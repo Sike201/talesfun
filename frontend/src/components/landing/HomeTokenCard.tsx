@@ -11,6 +11,8 @@ type Props = {
   solUsd?: number | null;
   vol24hLamports?: string;
   rank?: number;
+  lastTradeAt?: string | null;
+  showLastTradedBadge?: boolean;
 };
 
 function mediaSrc(raw?: string): string | undefined {
@@ -29,7 +31,11 @@ function tintFromSeed(seed: string): string {
   return `linear-gradient(145deg, hsl(${hue} 26% 24%), hsl(${(hue + 36) % 360} 18% 12%))`;
 }
 
-export default function HomeTokenCard({ token }: Props) {
+export default function HomeTokenCard({
+  token,
+  showLastTradedBadge,
+  lastTradeAt,
+}: Props) {
   const [failed, setFailed] = useState(false);
   const resolved = useMemo(() => mediaSrc(token.imageUrl), [token.imageUrl]);
   const showImg = !!resolved && !failed;
@@ -40,7 +46,7 @@ export default function HomeTokenCard({ token }: Props) {
   return (
     <Link href={`/token/${token.mint}`} className="group block">
       <div
-        className="relative aspect-square w-full overflow-hidden rounded-2xl"
+        className="relative aspect-square w-full overflow-hidden rounded-2xl border border-white/[0.14]"
         style={{ background: tintFromSeed(token.mint) }}
       >
         {showImg ? (
@@ -48,16 +54,22 @@ export default function HomeTokenCard({ token }: Props) {
           <img
             src={resolved}
             alt=""
-            className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+            className="absolute inset-0 size-full object-cover object-center"
             onError={() => setFailed(true)}
             loading="lazy"
             referrerPolicy="no-referrer"
           />
         ) : (
-          <span className="flex h-full w-full items-center justify-center text-2xl font-semibold tracking-wide text-white/55">
+          <span className="absolute inset-0 flex items-center justify-center text-2xl font-semibold tracking-wide text-white/55">
             {token.ticker.slice(0, 2).toUpperCase()}
           </span>
         )}
+
+        {showLastTradedBadge && lastTradeAt ? (
+          <span className="absolute left-2.5 top-2.5 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-300 shadow-sm ring-1 ring-white/15 backdrop-blur-sm">
+            Last traded · {timeAgo(new Date(lastTradeAt))}
+          </span>
+        ) : null}
 
         {bonding ? (
           <div className="absolute inset-x-3 bottom-3">

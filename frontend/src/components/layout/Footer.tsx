@@ -1,3 +1,1 @@
-export default function Footer() {
-  return null;
-}
+export { default } from "./SiteFooter";

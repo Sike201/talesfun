@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
@@ -10,6 +10,7 @@ import { cn, formatUSD } from "@/lib/utils";
 import toast from "react-hot-toast";
 import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
+import { sendOmnipairAddLiquidityTx } from "@/lib/omnipairLiquidity";
 import { useWalletBalances } from "@/hooks/useWalletBalances";
 import { persistLaunchpadTrade } from "@/lib/persistLaunchpadTrade";
 
@@ -21,7 +22,104 @@ function isLikelyBenignWalletOrRpcNoise(e: unknown): boolean {
   );
 }
 
-type Mode = "swap" | "leverage" | "borrow";
+type Mode = "swap" | "leverage" | "borrow" | "liquidity";
+
+/** Omnipair-style Long/Short or Buy/Sell pair */
+function TalesSegmentToggle<T extends string>({
+  options,
+  value,
+  onChange,
+  disabled,
+  tone = "neutral",
+}: {
+  options: [{ id: T; label: string }, { id: T; label: string }];
+  value: T;
+  onChange: (v: T) => void;
+  disabled?: boolean;
+  tone?: "neutral" | "signed";
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {options.map((opt, i) => {
+        const active = value === opt.id;
+        const signed =
+          tone === "signed"
+            ? i === 0
+              ? active
+                ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-300"
+                : "border-white/[0.08] text-white/40 hover:border-white/15"
+              : active
+                ? "border-red-400/50 bg-red-500/10 text-red-300"
+                : "border-white/[0.08] text-white/40 hover:border-white/15"
+            : active
+              ? "border-white/20 bg-white/[0.08] text-white"
+              : "border-white/[0.08] text-white/40 hover:border-white/15";
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(opt.id)}
+            className={cn(
+              "rounded-xl border px-2 py-3 text-sm font-semibold transition-colors disabled:opacity-50",
+              signed
+            )}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TalesTradeField({
+  label,
+  suffix,
+  headerRight,
+  children,
+}: {
+  label: string;
+  suffix?: string;
+  headerRight?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-black/35 px-3.5 py-3.5">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-white/45">{label}</span>
+        <div className="flex items-center gap-2">
+          {headerRight}
+          {suffix ? (
+            <span className="max-w-[80px] truncate text-[11px] font-semibold text-white/50">
+              {suffix}
+            </span>
+          ) : null}
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function TalesTradeDetailsRow({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1">
+      <span className="text-[11px] text-white/40">{label}</span>
+      <span className={cn("text-[11px] tabular-nums text-white/75", valueClassName)}>
+        {value}
+      </span>
+    </div>
+  );
+}
 
 interface Props {
   token: Token;
@@ -63,16 +161,17 @@ function SlippageButton({
   return (
     <div ref={ref} className="relative">
       <button
+        type="button"
         onClick={() => { setDraft(value); setOpen(o => !o); }}
-        className="text-[11px] text-gray-500 bg-gray-100 hover:bg-gray-200 px-2.5 py-1 rounded-full font-medium transition-colors"
+        className="rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-white/50 transition-colors hover:bg-white/10 hover:text-white/75"
       >
-        Slippage: {value}%
+        Max slippage · {value}%
       </button>
 
       {open && (
-        <div className="absolute right-0 top-8 z-20 bg-white rounded-xl shadow-lg border border-gray-100 p-4 w-60">
-          <p className="text-sm font-semibold text-gray-900 mb-1">Set max. slippage (%)</p>
-          <p className="text-xs text-gray-400 mb-3 leading-relaxed">
+        <div className="absolute right-0 top-8 z-20 w-60 rounded-xl border border-white/10 bg-zinc-900 p-4 shadow-xl">
+          <p className="mb-1 text-sm font-semibold text-white">Max slippage (%)</p>
+          <p className="mb-3 text-xs leading-relaxed text-white/45">
             Max slippage you are willing to accept when placing trades.
           </p>
           <input
@@ -81,11 +180,12 @@ function SlippageButton({
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => e.key === "Enter" && commit()}
             autoFocus
-            className="w-full bg-gray-100 rounded-lg px-3 py-2 text-sm font-medium text-gray-900 focus:outline-none mb-3"
+            className="mb-3 w-full rounded-lg bg-white/[0.06] px-3 py-2 text-sm font-medium text-white focus:outline-none"
           />
           <button
+            type="button"
             onClick={commit}
-            className="w-full bg-gray-900 text-white rounded-lg py-2 text-sm font-semibold hover:bg-gray-800 transition-colors"
+            className="w-full rounded-full bg-[#f4f4f5] py-2 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105"
           >
             Done
           </button>
@@ -105,35 +205,37 @@ function LeverageSlider({
 }) {
   const pct = ((value - 1) / 9) * 100;
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[11px] text-gray-400">Leverage</span>
-        <span className="text-sm font-bold text-gray-800">{value}x</span>
+    <div className="rounded-xl bg-white/[0.035] px-3.5 py-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[11px] font-medium text-white/45">Leverage</span>
+        <span className="text-sm font-bold tabular-nums text-white">{value}x</span>
       </div>
-      <div className="relative">
-        <input
-          type="range"
-          min={1}
-          max={10}
-          step={1}
-          value={value}
-          onChange={e => onChange(parseInt(e.target.value))}
-          className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-          style={{
-            background: `linear-gradient(to right, #374151 0%, #374151 ${pct}%, #E5E7EB ${pct}%, #E5E7EB 100%)`,
-            accentColor: "#374151",
-          }}
-        />
-      </div>
-      <div className="flex justify-between text-[10px] text-gray-400 mt-1.5">
+      <input
+        type="range"
+        min={1}
+        max={10}
+        step={1}
+        value={value}
+        onChange={e => onChange(parseInt(e.target.value))}
+        className="h-1.5 w-full cursor-pointer appearance-none rounded-full"
+        style={{
+          background: `linear-gradient(to right, rgba(200,230,255,0.7) 0%, rgba(200,230,255,0.7) ${pct}%, rgba(255,255,255,0.12) ${pct}%, rgba(255,255,255,0.12) 100%)`,
+          accentColor: "#a1a1aa",
+        }}
+      />
+      <div className="mt-2 flex justify-between text-[10px] text-white/35">
         {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => (
-          <span
+          <button
             key={l}
+            type="button"
             onClick={() => onChange(l)}
-            className={cn("cursor-pointer transition-colors", value === l ? "text-gray-800 font-semibold" : "hover:text-gray-600")}
+            className={cn(
+              "transition-colors",
+              value === l ? "font-semibold text-white" : "hover:text-white/60"
+            )}
           >
             {l}x
-          </span>
+          </button>
         ))}
       </div>
     </div>
@@ -158,47 +260,144 @@ export default function TradingInterface({
     omnipairPoolSnapshot != null &&
     omnipairPoolSnapshot.spotPriceSol > 0;
 
+  const tabs: { id: Mode; label: string }[] = [
+    { id: "leverage", label: "Leverage" },
+    { id: "borrow", label: "Borrow" },
+    { id: "swap", label: "Swap" },
+    { id: "liquidity", label: "Earn" },
+  ];
+
   return (
-    <div className="bg-white rounded-lg overflow-hidden">
-      {/* Mode selector */}
-      <div className="flex items-center bg-gray-100 rounded-lg m-4 p-1 gap-1">
-        {(["swap", "leverage", "borrow"] as const).map(m => (
+    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#111111]">
+      <div className="flex gap-1 overflow-x-auto border-b border-white/[0.06] px-2 pt-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {tabs.map(t => (
           <button
-            key={m}
-            onClick={() => setMode(m)}
+            key={t.id}
+            type="button"
+            onClick={() => setMode(t.id)}
             className={cn(
-              "flex-1 py-2 rounded-md text-xs font-semibold transition-all",
-              mode === m ? "bg-white text-gray-900 shadow-sm" : "text-gray-400 hover:text-gray-600"
+              "shrink-0 rounded-t-lg px-3.5 py-2.5 text-[12px] font-semibold transition-colors",
+              mode === t.id
+                ? "bg-white/[0.08] text-white"
+                : "text-white/40 hover:text-white/70"
             )}
           >
-            {m === "leverage" ? "Leverage" : m === "borrow" ? "Borrow" : "Swap"}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {omnipairSwapReady && mode === "swap" ? (
-        <p className="px-4 -mt-1 mb-1 text-[10px] text-emerald-800 font-medium">
-          Omnipair swap — uses your WSOL account for SOL; SOL is wrapped automatically when you buy.
-        </p>
-      ) : null}
-      <div className="px-4 pb-4">
-        {mode === "swap"     && (
+      <div className="space-y-3 p-4">
+        {mode === "swap" ? (
           <SwapPanel
             token={token}
             connected={connected}
             spotPriceSol={usingPoolSpot ? spotPriceSol! : null}
             omnipairPoolSnapshot={omnipairSwapReady ? omnipairPoolSnapshot! : null}
           />
-        )}
-        {mode === "leverage" && (
+        ) : null}
+        {mode === "leverage" ? (
           <LeveragePanel
             token={token}
             connected={connected}
             initialDirection={initialLeverageDirection}
           />
-        )}
-        {mode === "borrow"   && <BorrowPanel   token={token} connected={connected} />}
+        ) : null}
+        {mode === "borrow" ? (
+          <BorrowPanel token={token} connected={connected} />
+        ) : null}
+        {mode === "liquidity" ? (
+          <OmnipairLiquidityPanel
+            token={token}
+            connected={connected}
+            omnipairPoolSnapshot={omnipairSwapReady ? omnipairPoolSnapshot! : null}
+          />
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+export function OmnipairLiquidityPanel({
+  token,
+  connected,
+  omnipairPoolSnapshot,
+}: {
+  token: Token;
+  connected: boolean;
+  omnipairPoolSnapshot: OmnipairPoolSnapshot | null;
+}) {
+  const { connection } = useConnection();
+  const walletAdapter = useWallet();
+  const [solAmount, setSolAmount] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleAdd = async () => {
+    if (!connected || !omnipairPoolSnapshot) return;
+    const num = parseFloat(solAmount);
+    if (!(num > 0)) {
+      toast.error("Enter SOL amount");
+      return;
+    }
+    if (!walletAdapter.publicKey || !walletAdapter.signTransaction) {
+      toast.error("Connect a signing wallet");
+      return;
+    }
+    setLoading(true);
+    try {
+      const wallet = {
+        publicKey: walletAdapter.publicKey,
+        signTransaction: walletAdapter.signTransaction.bind(walletAdapter),
+        signAllTransactions:
+          walletAdapter.signAllTransactions?.bind(walletAdapter) ??
+          (async <T,>(txs: T[]) => txs),
+      };
+      const sig = await sendOmnipairAddLiquidityTx({
+        connection,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        wallet: wallet as any,
+        snapshot: omnipairPoolSnapshot,
+        solUi: num,
+        slippagePercent: 5,
+      });
+      toast.success(`LP added · ${sig.slice(0, 8)}…`);
+      setSolAmount("");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Add LP failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] leading-relaxed text-white/50">
+        Provide both sides of the pool (we quote the token leg from live reserves). You earn swap fees as an LP on Omnipair.
+      </p>
+      <TalesTradeField
+        label="Deposit (SOL leg)"
+        suffix={`+ ${token.ticker}`}
+      >
+        <input
+          type="number"
+          value={solAmount}
+          onChange={e => setSolAmount(e.target.value)}
+          placeholder="0.0"
+          className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+        />
+      </TalesTradeField>
+      {connected ? (
+        <button
+          type="button"
+          disabled={loading || !omnipairPoolSnapshot || !solAmount}
+          onClick={handleAdd}
+          className="w-full rounded-full bg-[#f4f4f5] py-3 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {loading ? "Adding liquidity…" : "Add liquidity"}
+        </button>
+      ) : (
+        <WalletMultiButton />
+      )}
     </div>
   );
 }
@@ -367,51 +566,49 @@ function SwapPanel({
     }
   };
 
+  const spendableSol =
+    omnipairPoolSnapshot != null
+      ? omnipairMaxBuySolUi(solBalanceLamports)
+      : Number(solBalanceLamports) / 1e9;
+  const tokenBalUi = Number(tokenBalanceRaw || "0") / 10 ** tokenDecimals;
+
   return (
     <div className="space-y-3">
-      {/* Buy / Sell — glass toggle */}
-      <div className="relative flex bg-gray-100 rounded-lg p-1">
-        {/* glass sliding pill */}
-        <div
-          className="absolute top-1 bottom-1 rounded-md transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-          style={{
-            width: "calc(50% - 4px)",
-            left: side === "buy" ? "4px" : "calc(50%)",
-            background: side === "buy"
-              ? "linear-gradient(-75deg, rgba(255,255,255,0.08), rgba(34,197,94,0.13), rgba(255,255,255,0.06))"
-              : "linear-gradient(-75deg, rgba(255,255,255,0.08), rgba(239,68,68,0.13), rgba(255,255,255,0.06))",
-            boxShadow: "inset 0 1.5px 1.5px rgba(0,0,0,0.04), inset 0 -1.5px 1.5px rgba(255,255,255,0.6), 0 1px 6px rgba(0,0,0,0.08), inset 0 0 0 1.5px rgba(255,255,255,0.35)",
-            backdropFilter: "blur(3px)",
-            WebkitBackdropFilter: "blur(3px)",
-          }}
+      <TalesSegmentToggle
+        tone="signed"
+        options={[
+          { id: "buy" as const, label: "Buy" },
+          { id: "sell" as const, label: "Sell" },
+        ]}
+        value={side}
+        disabled={loading}
+        onChange={s => {
+          setSide(s);
+          setAmount("");
+        }}
+      />
+
+      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+        <TalesTradeDetailsRow
+          label="Available"
+          value={
+            walletBalLoading
+              ? "…"
+              : side === "buy"
+                ? `${spendableSol.toFixed(4)} SOL`
+                : `${tokenBalUi.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${displayTicker}`
+          }
         />
-        {(["buy", "sell"] as const).map(s => (
-          <button
-            key={s}
-            type="button"
-            disabled={loading}
-            onClick={() => { setSide(s); setAmount(""); }}
-            className={cn(
-              "relative flex-1 py-2.5 rounded-md text-sm font-semibold transition-colors duration-200 z-10",
-              side === s
-                ? s === "buy" ? "text-green-800" : "text-red-800"
-                : "text-gray-400"
-            )}
-          >
-            {s === "buy" ? "Buy" : "Sell"}
-          </button>
-        ))}
+        <TalesTradeDetailsRow
+          label="Venue"
+          value={omnipairPoolSnapshot ? "Omnipair spot" : "Estimate"}
+        />
       </div>
 
-      {/* Slippage */}
-      <div className="flex items-center justify-end">
-        <SlippageButton value={slippage} onChange={setSlippage} />
-      </div>
-
-      {/* Amount input */}
-      <div className="bg-gray-100 rounded-lg p-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-gray-400">Amount</span>
+      <TalesTradeField
+        label={side === "buy" ? `Buy ${token.ticker}` : `Sell ${token.ticker}`}
+        suffix={side === "buy" ? "SOL" : displayTicker}
+        headerRight={
           <button
             type="button"
             disabled={loading || (omnipairPoolSnapshot != null && walletBalLoading)}
@@ -419,58 +616,74 @@ function SwapPanel({
               if (omnipairPoolSnapshot) applyOmnipairQuickPercent(100);
               else setAmount("100");
             }}
-            className="text-[10px] text-gray-500 font-semibold hover:text-gray-700 disabled:opacity-40"
+            className="text-[10px] font-semibold text-white/50 hover:text-white disabled:opacity-40"
           >
             Max
           </button>
-        </div>
-        <div className="flex items-center gap-2 min-w-0">
-          <input
-            type="number"
-            value={amount}
-            onChange={e => setAmount(e.target.value)}
-            placeholder="0"
-            className="flex-1 min-w-0 bg-transparent text-xl font-semibold text-gray-900 placeholder:text-gray-300 focus:outline-none"
-          />
-          <span className="text-sm font-semibold text-gray-400 flex-shrink-0 max-w-[60px] truncate">
-            {side === "buy" ? "SOL" : displayTicker}
-          </span>
-        </div>
-      </div>
+        }
+      >
+        <input
+          type="number"
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          placeholder="0"
+          className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+        />
+        {num > 0 ? (
+          <p className="mt-2 text-xs text-white/40">
+            ↓{" "}
+            <span className="font-medium text-white/75">
+              {side === "buy"
+                ? `${estimated.toLocaleString()} ${token.ticker}`
+                : `${estimated.toFixed(4)} SOL`}
+            </span>
+          </p>
+        ) : null}
+      </TalesTradeField>
 
-      {/* Quick amounts — Omnipair: % of spendable SOL (buy) or token balance (sell) */}
       <div className="flex gap-1.5">
         {([25, 50, 100] as const).map(pct => (
           <button
             key={pct}
             type="button"
-            disabled={
-              loading ||
-              (omnipairPoolSnapshot != null && walletBalLoading)
-            }
+            disabled={loading || (omnipairPoolSnapshot != null && walletBalLoading)}
             onClick={() => {
               if (omnipairPoolSnapshot) applyOmnipairQuickPercent(pct);
               else setAmount(String(pct));
             }}
-            className="flex-1 py-1.5 text-[10px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-md transition-colors disabled:opacity-40 disabled:pointer-events-none"
+            className="flex-1 rounded-lg border border-white/10 bg-black/30 py-1.5 text-[10px] font-semibold text-white/50 transition-colors hover:border-white/20 hover:text-white/80 disabled:pointer-events-none disabled:opacity-40"
           >
             {pct}%
           </button>
         ))}
       </div>
 
-      {/* Receive estimate */}
-      <p className="text-xs text-gray-400 min-h-[18px]">
-        {num > 0 ? (
-          <>You will receive ~<span className="text-gray-700 font-medium">
-            {side === "buy"
-              ? `${estimated.toLocaleString()} ${token.ticker}`
-              : `${typeof estimated === "number" ? estimated.toFixed(4) : "0"} SOL`}
-          </span></>
-        ) : null}
-      </p>
+      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+        <TalesTradeDetailsRow
+          label="You pay"
+          value={
+            num > 0
+              ? side === "buy"
+                ? `${num} SOL`
+                : `${num} ${displayTicker}`
+              : "—"
+          }
+        />
+        <TalesTradeDetailsRow
+          label="You receive"
+          value={
+            num > 0
+              ? side === "buy"
+                ? `~${estimated.toLocaleString()} ${token.ticker}`
+                : `~${estimated.toFixed(4)} SOL`
+              : "—"
+          }
+        />
+        <div className="flex justify-end border-t border-white/[0.06] pt-2 mt-1">
+          <SlippageButton value={slippage} onChange={setSlippage} />
+        </div>
+      </div>
 
-      {/* CTA */}
       {connected ? (
         <button
           type="button"
@@ -481,7 +694,7 @@ function SwapPanel({
             (omnipairPoolSnapshot != null && walletBalLoading)
           }
           aria-busy={loading}
-          className="glass-trade-btn disabled:opacity-50 disabled:pointer-events-none"
+          className="w-full rounded-full bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading && omnipairPoolSnapshot
             ? "Swapping…"
@@ -530,114 +743,91 @@ function LeveragePanel({
   const handleOpen = async () => {
     if (!connected || !size) return;
     setLoading(true);
-    await new Promise(r => setTimeout(r, 1500));
-    toast.success(`Opened ${leverage}x ${direction} on ${token.ticker}`);
-    setSize("");
+    await new Promise(r => setTimeout(r, 400));
+    toast.error(
+      `Long/short txs are next — Omnipair pool is live for swap. See Docs → Leveraging.`
+    );
     setLoading(false);
   };
 
   return (
     <div className="space-y-3">
-      {/* Isolated + leverage label */}
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">Isolated</span>
-        <span className="text-[10px] text-gray-400">{leverage}x leverage</span>
+      <TalesSegmentToggle
+        tone="signed"
+        options={[
+          { id: "long" as const, label: "Long" },
+          { id: "short" as const, label: "Short" },
+        ]}
+        value={direction}
+        onChange={setDirection}
+      />
+
+      <div className="flex items-center justify-between px-0.5">
+        <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold text-white/50">
+          Isolated
+        </span>
+        <span className="text-[10px] font-medium text-white/45">{leverage}x leverage</span>
       </div>
 
-      {/* Long / Short — glass toggle */}
-      <div className="relative flex bg-gray-100 rounded-lg p-1">
-        <div
-          className="absolute top-1 bottom-1 rounded-md transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-          style={{
-            width: "calc(50% - 4px)",
-            left: direction === "long" ? "4px" : "calc(50%)",
-            background: direction === "long"
-              ? "linear-gradient(-75deg, rgba(255,255,255,0.08), rgba(34,197,94,0.13), rgba(255,255,255,0.06))"
-              : "linear-gradient(-75deg, rgba(255,255,255,0.08), rgba(239,68,68,0.13), rgba(255,255,255,0.06))",
-            boxShadow: "inset 0 1.5px 1.5px rgba(0,0,0,0.04), inset 0 -1.5px 1.5px rgba(255,255,255,0.6), 0 1px 6px rgba(0,0,0,0.08), inset 0 0 0 1.5px rgba(255,255,255,0.35)",
-            backdropFilter: "blur(3px)",
-            WebkitBackdropFilter: "blur(3px)",
-          }}
+      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+        <TalesTradeDetailsRow
+          label="Available to trade"
+          value={`0.00 ${direction === "long" ? "SOL" : displayTicker}`}
         />
-        <button
-          onClick={() => setDirection("long")}
-          className={cn("relative flex-1 py-2.5 rounded-md text-sm font-semibold transition-colors duration-200 z-10",
-            direction === "long" ? "text-green-800" : "text-gray-400")}
-        >
-          Long
-        </button>
-        <button
-          onClick={() => setDirection("short")}
-          className={cn("relative flex-1 py-2.5 rounded-md text-sm font-semibold transition-colors duration-200 z-10",
-            direction === "short" ? "text-red-800" : "text-gray-400")}
-        >
-          Short
-        </button>
+        <TalesTradeDetailsRow
+          label="Current position"
+          value={`0.00 ${displayTicker}`}
+        />
       </div>
 
-      {/* Available / Position */}
-      <div className="space-y-1 text-xs">
-        <div className="flex justify-between">
-          <span className="text-gray-400">Available to Trade</span>
-          <span className="text-gray-700">0.00 {direction === "long" ? "SOL" : displayTicker}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Current Position</span>
-          <span className="text-gray-700">0.00 {displayTicker}</span>
-        </div>
-      </div>
-
-      {/* Size input */}
-      <div className="bg-gray-100 rounded-lg p-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-gray-400">Size</span>
-          <span className="text-[11px] text-gray-400 truncate max-w-[60px]">{displayTicker}</span>
-        </div>
+      <TalesTradeField label="Size" suffix={displayTicker}>
         <input
           type="number"
           value={size}
           onChange={e => setSize(e.target.value)}
           placeholder="0"
-          className="w-full bg-transparent text-xl font-semibold text-gray-900 placeholder:text-gray-300 focus:outline-none"
+          className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
         />
-      </div>
+      </TalesTradeField>
 
-      {/* Leverage slider */}
       <LeverageSlider value={leverage} onChange={setLeverage} />
 
-      {/* Position details */}
-      <div className="space-y-1.5 text-xs pt-2 border-t border-gray-100">
-        <div className="flex justify-between">
-          <span className="text-gray-400">Liquidation Price</span>
-          <span className={sizeNum > 0 ? "text-gray-700 font-medium" : "text-gray-400"}>
-            {sizeNum > 0 ? `$${liqPrice.toFixed(6)}` : "N/A"}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Order Value</span>
-          <span className="text-gray-600">{sizeNum > 0 ? formatUSD(positionSize * currentPriceUSD) : "N/A"}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Slippage (max)</span>
-          <span className="text-gray-600">8.00%</span>
-        </div>
+      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+        <TalesTradeDetailsRow
+          label="Liquidation price"
+          value={sizeNum > 0 ? `$${liqPrice.toFixed(6)}` : "N/A"}
+        />
+        <TalesTradeDetailsRow
+          label="Order value"
+          value={sizeNum > 0 ? formatUSD(positionSize * currentPriceUSD) : "N/A"}
+        />
+        <TalesTradeDetailsRow label="Slippage (max)" value="8.00%" />
       </div>
 
       {leverage >= 5 && (
-        <div className="flex gap-2 bg-yellow-50 rounded-lg p-2.5">
-          <AlertTriangle size={12} className="text-yellow-500 flex-shrink-0 mt-0.5" />
-          <p className="text-[10px] text-yellow-700">
-            High leverage. Liquidation at {(100 / leverage).toFixed(0)}% adverse move.
+        <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-300" />
+          <p className="text-[10px] leading-relaxed text-amber-100/90">
+            High leverage. Liquidation at about {(100 / leverage).toFixed(0)}% adverse move.
           </p>
         </div>
       )}
 
-      {/* CTA */}
+      <p className="text-[10px] leading-relaxed text-white/35">
+        Long/short txs coming next — spot swap works now on Omnipair.
+      </p>
+
       {connected ? (
         <button
+          type="button"
           onClick={handleOpen}
           disabled={loading || !size}
-          className="glass-trade-btn"
+          className={cn(
+            "w-full rounded-full py-3.5 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
+            direction === "long"
+              ? "bg-emerald-500 text-[#04140a] hover:brightness-105"
+              : "bg-red-500 text-white hover:brightness-105"
+          )}
         >
           {loading ? "Opening…" : `${direction === "long" ? "Long" : "Short"} ${token.ticker}`}
         </button>
@@ -664,70 +854,55 @@ function BorrowPanel({ token, connected }: { token: Token; connected: boolean })
   const handleBorrow = async () => {
     if (!connected || !amount) return;
     setLoading(true);
-    await new Promise(r => setTimeout(r, 1200));
-    toast.success(`Borrowed SOL against ${token.ticker}`);
-    setAmount("");
+    await new Promise(r => setTimeout(r, 400));
+    toast.error(
+      `Borrow txs are next — post collateral via Omnipair once wired. See Docs → Borrowing.`
+    );
     setLoading(false);
   };
 
   return (
     <div className="space-y-3">
-      {/* Collateral input */}
-      <div className="bg-gray-100 rounded-lg p-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-gray-400">Collateral</span>
-          <span className="text-[11px] text-gray-400 truncate max-w-[60px]">{displayTicker}</span>
-        </div>
+      <TalesTradeField label="Collateral" suffix={displayTicker}>
         <input
           type="number"
           value={amount}
           onChange={e => setAmount(e.target.value)}
           placeholder="0"
-          className="w-full bg-transparent text-xl font-semibold text-gray-900 placeholder:text-gray-300 focus:outline-none"
+          className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
         />
+      </TalesTradeField>
+
+      <TalesTradeField label="Receive" suffix="SOL">
+        <span className="text-2xl font-semibold tracking-tight text-white">
+          {num > 0 ? ((maxBorrow * priceUSD) / 140).toFixed(4) : "0"}
+        </span>
+      </TalesTradeField>
+
+      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+        <TalesTradeDetailsRow
+          label="Collateral value"
+          value={num > 0 ? formatUSD(num * priceUSD) : "—"}
+        />
+        <TalesTradeDetailsRow
+          label="Available to borrow"
+          value={num > 0 ? formatUSD(maxBorrow * priceUSD) : "—"}
+        />
+        <TalesTradeDetailsRow label="Interest rate" value="6.5% APR" />
+        <TalesTradeDetailsRow label="Max LTV" value="65%" />
+        <TalesTradeDetailsRow label="Liquidation at" value="−40% from entry" />
       </div>
 
-      {/* Receive output */}
-      <div className="bg-gray-100 rounded-lg p-3">
-        <span className="text-[11px] text-gray-400 block mb-1">Receive SOL</span>
-        <div className="flex items-baseline gap-2">
-          <span className="text-xl font-semibold text-gray-900">
-            {num > 0 ? (maxBorrow * priceUSD / 140).toFixed(4) : "0"}
-          </span>
-          <span className="text-sm text-gray-400 font-medium">SOL</span>
-        </div>
-      </div>
+      <p className="text-[10px] leading-relaxed text-white/35">
+        Borrow submits via Omnipair next — UI is ready.
+      </p>
 
-      {/* Details */}
-      <div className="space-y-1.5 text-xs pt-2 border-t border-gray-100">
-        <div className="flex justify-between">
-          <span className="text-gray-400">Collateral Value</span>
-          <span className="text-gray-700">{num > 0 ? formatUSD(num * priceUSD) : "—"}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Available to Borrow</span>
-          <span className="text-gray-700 font-medium">{num > 0 ? formatUSD(maxBorrow * priceUSD) : "—"}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Interest Rate</span>
-          <span className="text-gray-600">6.5% APR</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Max LTV</span>
-          <span className="text-gray-600">65%</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Liquidation at</span>
-          <span className="text-gray-600">−40% from entry</span>
-        </div>
-      </div>
-
-      {/* CTA */}
       {connected ? (
         <button
+          type="button"
           onClick={handleBorrow}
           disabled={loading || !amount}
-          className="glass-trade-btn"
+          className="w-full rounded-full bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading ? "Processing…" : "Borrow SOL"}
         </button>

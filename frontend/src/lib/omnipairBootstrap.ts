@@ -1151,6 +1151,15 @@ export async function sendBootstrapOmnipairPoolTx(params: {
   /** Log full Omnipair `initialize` account list (index, label, pubkey, flags). */
   logAccountMetas?: boolean;
 }): Promise<string> {
+  const { graduateToDuskMarket } = await import("./duskMarket");
+  return graduateToDuskMarket({
+    connection: params.connection,
+    wallet: params.wallet,
+    mint: params.mint,
+    ticker: params.ticker,
+    lpUri: params.lpUri,
+  });
+
   const { connection, wallet, mint, ticker, lpUri } = params;
   const pool = params.pool ?? DEFAULT_POOL;
 

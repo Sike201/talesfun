@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import {
-  Upload, Bird, Send, Globe, Zap, AlertCircle, ChevronDown,
+  Upload, Bird, Send, Globe, Zap, AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GRADUATION_SOL, FIXED_SUPPLY } from "@/types";
@@ -28,9 +28,7 @@ import {
   getPlatformPDA,
   getReadOnlyProgram,
 } from "@/lib/program";
-import LaunchPathJourney from "@/components/landing/LaunchPathJourney";
 import CoinPreview from "@/components/landing/CoinPreview";
-import { fraunces } from "@/lib/fonts";
 
 interface FormData {
   name: string;
@@ -81,8 +79,7 @@ export default function CreatePage() {
   const program = useProgram();
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchStep, setLaunchStep] = useState<"idle" | "launching" | "submitted">("idle");
-  const [ownershipUSD, setOwnershipUSD] = useState("");
-  const [showMore, setShowMore] = useState(false);
+  const [openingBuySol, setOpeningBuySol] = useState("");
   const [platformReady, setPlatformReady] = useState<boolean | null>(null);
   const [initializingPlatform, setInitializingPlatform] = useState(false);
   /** Rent-exempt minimum for the 0-byte `sol_vault` PDA (not tradable curve liquidity). */
@@ -194,9 +191,11 @@ export default function CreatePage() {
     if (!form.name.trim()) return "Token name is required";
     if (!form.ticker.trim()) return "Ticker is required";
     if (form.ticker.length > 10) return "Ticker must be 10 characters or less";
-    if (!form.description.trim()) return "Description is required";
     return null;
   };
+
+  const launchFeeLabel = solVaultRentSol ?? "0.0009";
+  const economicsLine = `Launch fee ~${launchFeeLabel} SOL. Graduates at ${GRADUATION_SOL} SOL. Curve fee 1.0%.`;
 
   const handleLaunch = async () => {
     if (isLaunching) return;
@@ -205,7 +204,7 @@ export default function CreatePage() {
       return;
     }
     if (!platformReady) {
-      toast.error("Platform not initialized — click 'Initialize Platform' first");
+      toast.error("Platform not initialized. Click Initialize Platform first.");
       return;
     }
     const err = validate();
@@ -256,7 +255,7 @@ export default function CreatePage() {
           toast.error(
             typeof (persistJson as { error?: string }).error === "string"
               ? `Could not save token to database: ${(persistJson as { error: string }).error.slice(0, 80)}`
-              : "Could not save token to database — trades may fail until this is fixed"
+              : "Could not save token to database. Trades may fail until this is fixed."
           );
         }
       } catch (e) {
@@ -486,36 +485,23 @@ export default function CreatePage() {
   };
 
   const fieldClass =
-    "w-full rounded-xl bg-white/[0.06] px-3 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20";
-  const labelClass =
-    "mb-1.5 block text-xs font-semibold uppercase tracking-wider text-white/40";
+    "w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5 text-[14px] text-white placeholder:text-white/30 transition-colors focus:border-white/20 focus:bg-white/[0.05] focus:outline-none";
+  const labelClass = "mb-1.5 block text-[12px] font-medium text-white/45";
 
   return (
-    <div data-tales-page>
-      <div className="mx-auto max-w-6xl px-6 pb-24 pt-8">
-        <div className="mb-6">
-          <LaunchPathJourney compact />
-        </div>
-
-        <div className="mb-6 max-w-xl">
-          <h1
-            className={cn(fraunces.className, "font-fraunces text-[2rem] font-medium tracking-[-0.03em] text-white sm:text-[2.25rem]")}
-            style={{
-              fontFamily:
-                "var(--font-fraunces), Fraunces, ui-serif, Georgia, serif",
-              fontVariationSettings: '"SOFT" 55, "WONK" 1, "opsz" 144',
-            }}
-          >
-            Create new coin
+    <div data-tales-page className="min-h-screen bg-[#0a0a0a]">
+      <div className="mx-auto max-w-6xl px-4 pb-16 pt-10 sm:px-6 md:px-8">
+        <div className="mb-10 max-w-xl">
+          <h1 className="text-[1.75rem] font-semibold tracking-[-0.03em] text-white sm:text-[2rem]">
+            Launch a token
           </h1>
-          <p className="mt-2 text-sm text-white/50">
-            Choose carefully — name, ticker, and image can&apos;t be changed after
-            launch.
+          <p className="mt-2 text-[14px] leading-relaxed text-white/40">
+            Name, ticker, and image are permanent after launch.
           </p>
         </div>
 
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] lg:items-start">
-          <div className="space-y-5 rounded-2xl bg-white/[0.035] p-6">
+        <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,20rem)] lg:items-start">
+          <div className="space-y-5">
             <div>
               <label className={labelClass}>Image</label>
               <div
@@ -524,7 +510,7 @@ export default function CreatePage() {
                   "cursor-pointer rounded-xl border border-dashed p-5 text-center transition-colors",
                   form.imagePreview
                     ? "border-white/20 bg-white/[0.04]"
-                    : "border-white/15 hover:border-white/25 hover:bg-white/[0.03]"
+                    : "border-white/[0.12] hover:border-white/25 hover:bg-white/[0.03]"
                 )}
               >
                 {form.imagePreview ? (
@@ -541,7 +527,7 @@ export default function CreatePage() {
                       <p className="text-sm font-medium text-white/80">
                         {form.image?.name}
                       </p>
-                      <p className="text-[10px] text-white/35">Click to change</p>
+                      <p className="text-[11px] text-white/35">Click to change</p>
                     </div>
                   </div>
                 ) : (
@@ -550,7 +536,7 @@ export default function CreatePage() {
                     <p className="text-sm text-white/55">
                       Select image or drag and drop
                     </p>
-                    <p className="mt-1 text-[10px] text-white/35">
+                    <p className="mt-1 text-[11px] text-white/35">
                       PNG, JPG, GIF · Max 5MB
                     </p>
                   </div>
@@ -572,14 +558,14 @@ export default function CreatePage() {
                   type="text"
                   value={form.name}
                   onChange={e => set("name", e.target.value)}
-                  placeholder="Name your coin"
+                  placeholder="Name your token"
                   className={fieldClass}
                 />
               </div>
               <div>
                 <label className={labelClass}>Ticker</label>
                 <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-white/30">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-white/30">
                     $
                   </span>
                   <input
@@ -593,18 +579,18 @@ export default function CreatePage() {
                     }
                     placeholder="TICKER"
                     maxLength={10}
-                    className={cn(fieldClass, "pl-7 font-semibold")}
+                    className={cn(fieldClass, "pl-7 font-medium")}
                   />
                 </div>
               </div>
             </div>
 
             <div>
-              <label className={labelClass}>Description (optional)</label>
+              <label className={labelClass}>Description</label>
               <textarea
                 value={form.description}
                 onChange={e => set("description", e.target.value)}
-                placeholder="Write a short description"
+                placeholder="Optional short description"
                 rows={3}
                 maxLength={500}
                 className={cn(fieldClass, "resize-none")}
@@ -612,7 +598,7 @@ export default function CreatePage() {
             </div>
 
             <div className="space-y-3">
-              <label className={labelClass}>Socials (optional)</label>
+              <label className={labelClass}>Socials</label>
               {[
                 { key: "website" as const, icon: Globe, placeholder: "Website URL" },
                 { key: "twitter" as const, icon: Bird, placeholder: "X / Twitter" },
@@ -634,115 +620,58 @@ export default function CreatePage() {
               ))}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowMore(v => !v)}
-              className="flex w-full items-center justify-between rounded-xl bg-white/[0.04] px-3 py-2.5 text-left text-sm text-white/65 transition hover:bg-white/[0.06]"
-            >
-              <span>More options</span>
-              <ChevronDown
-                size={16}
-                className={cn(
-                  "text-white/40 transition-transform",
-                  showMore && "rotate-180"
-                )}
-              />
-            </button>
-
-            {showMore ? (
-              <div className="space-y-4 rounded-xl bg-white/[0.03] p-4">
-                <div>
-                  <label className={labelClass}>
-                    Fee recipient{" "}
-                    <span className="font-normal normal-case text-white/30">
-                      defaults to your wallet
-                    </span>
-                  </label>
-                  <input
-                    type="text"
-                    value={form.creatorFeeRecipient}
-                    onChange={e => set("creatorFeeRecipient", e.target.value)}
-                    placeholder={publicKey?.toBase58() || "Wallet address…"}
-                    className={cn(fieldClass, "font-mono")}
-                  />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className={labelClass}>Creator fee</label>
+                <div className="flex h-[42px] items-center rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 text-[14px] tabular-nums text-white/80">
+                  1.0%
                 </div>
-
-                {(() => {
-                  const SOL_PRICE = 140;
-                  const LAUNCH_PRICE_SOL = 0.0000038;
-                  const PRESETS = [
-                    { pct: 1, tokens: 100_000 },
-                    { pct: 10, tokens: 1_000_000 },
-                    { pct: 30, tokens: 3_000_000 },
-                  ].map(p => ({
-                    ...p,
-                    usd: Math.round(p.tokens * LAUNCH_PRICE_SOL * SOL_PRICE),
-                  }));
-                  const usdNum = parseFloat(ownershipUSD) || 0;
-                  const solEquiv =
-                    usdNum > 0 ? (usdNum / SOL_PRICE).toFixed(4) : null;
-
-                  return (
-                    <div>
-                      <label className={cn(labelClass, "mb-0.5")}>
-                        Dev buy (optional)
-                      </label>
-                      <p className="mb-2 text-xs text-white/40">
-                        Buy before anyone else.
-                      </p>
-                      <div className="mb-2 flex items-center gap-1 rounded-xl bg-white/[0.06] px-3 py-2.5">
-                        <span className="text-base font-semibold text-white/30">
-                          $
-                        </span>
-                        <input
-                          type="number"
-                          value={ownershipUSD}
-                          onChange={e => setOwnershipUSD(e.target.value)}
-                          placeholder="0.00"
-                          className="flex-1 bg-transparent text-base font-semibold text-white placeholder:text-white/30 focus:outline-none"
-                        />
-                      </div>
-                      <p className="mb-2 text-xs text-white/40">
-                        {solEquiv ? `≈ ${solEquiv} SOL` : "≈ 0 SOL"}
-                      </p>
-                      <div className="flex gap-1.5">
-                        {PRESETS.map(({ pct, usd }) => (
-                          <button
-                            key={pct}
-                            type="button"
-                            onClick={() =>
-                              setOwnershipUSD(
-                                ownershipUSD === String(usd) ? "" : String(usd)
-                              )
-                            }
-                            className={cn(
-                              "flex flex-1 flex-col items-center rounded-lg py-2 text-xs transition-all",
-                              ownershipUSD === String(usd)
-                                ? "bg-white text-black"
-                                : "bg-white/[0.06] text-white/60 hover:bg-white/10"
-                            )}
-                          >
-                            <span className="font-semibold">{pct}%</span>
-                            <span className="text-[10px] opacity-70">${usd}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                <p className="text-[11px] leading-relaxed text-white/40">
-                  Launch pays a one-time vault rent
-                  {solVaultRentSol != null
-                    ? ` (~${solVaultRentSol} SOL)`
-                    : ""}
-                  . Not curve liquidity. Graduates at {GRADUATION_SOL} SOL.
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/35">
+                  Accrues to your fee wallet. Claim on the token page.
                 </p>
               </div>
-            ) : null}
+              <div>
+                <label className={labelClass}>Opening buy</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={openingBuySol}
+                    onChange={e => setOpeningBuySol(e.target.value)}
+                    placeholder="0"
+                    className={cn(fieldClass, "pr-12")}
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-medium text-white/35">
+                    SOL
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/35">
+                  Optional. Buy first from the token page after launch.
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <label className={labelClass}>Creator fee wallet</label>
+              <input
+                type="text"
+                value={form.creatorFeeRecipient}
+                onChange={e => set("creatorFeeRecipient", e.target.value)}
+                placeholder={publicKey?.toBase58() || "Defaults to your wallet"}
+                className={cn(fieldClass, "font-mono text-[13px]")}
+              />
+              <p className="mt-1.5 text-[11px] text-white/35">
+                Defaults to your connected wallet.
+              </p>
+            </div>
+
+            <p className="text-[12px] leading-relaxed text-white/40">
+              {economicsLine}
+            </p>
 
             {connected && platformReady === false && (
-              <div className="space-y-2 rounded-xl bg-amber-500/10 p-4">
+              <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4">
                 <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
                   <AlertCircle size={14} /> Platform not initialized
                 </div>
@@ -751,9 +680,10 @@ export default function CreatePage() {
                   tokens can launch.
                 </p>
                 <button
+                  type="button"
                   onClick={handleInitializePlatform}
                   disabled={initializingPlatform}
-                  className="w-full rounded-xl bg-amber-400 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-amber-300 disabled:opacity-50"
+                  className="w-full rounded-full bg-amber-400 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-amber-300 disabled:opacity-50"
                 >
                   {initializingPlatform ? "Initializing..." : "Initialize Platform"}
                 </button>
@@ -762,10 +692,10 @@ export default function CreatePage() {
 
             {connected ? (
               <button
+                type="button"
                 onClick={handleLaunch}
                 disabled={isLaunching || platformReady === false}
-                className="home-btn-primary w-full disabled:opacity-50"
-                style={{ border: "none", cursor: "pointer" }}
+                className="inline-flex h-11 w-full items-center justify-center rounded-full bg-white text-[13px] font-semibold text-[#0a0a0a] transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 {isLaunching ? (
                   <span className="flex items-center justify-center gap-2">
@@ -775,14 +705,12 @@ export default function CreatePage() {
                       : "Launching on Solana..."}
                   </span>
                 ) : (
-                  "Launch coin"
+                  "Launch token"
                 )}
               </button>
             ) : (
               <div className="flex flex-col items-center gap-2 pt-1">
-                <p className="text-xs text-white/40">
-                  Connect your wallet to launch
-                </p>
+                <p className="text-xs text-white/40">Connect your wallet to launch</p>
                 <WalletMultiButton />
               </div>
             )}
@@ -793,6 +721,8 @@ export default function CreatePage() {
             ticker={form.ticker}
             description={form.description}
             imagePreview={form.imagePreview}
+            launchFeeSol={solVaultRentSol}
+            creatorFeePct={1}
           />
         </div>
       </div>

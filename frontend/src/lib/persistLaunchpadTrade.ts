@@ -12,7 +12,15 @@ export type LaunchpadTradePayload = {
 };
 
 /** Fire-and-forget: record a confirmed bonding-curve trade in Supabase via API. */
+import { recordLocalTradeActivity } from "@/lib/recentActivityLocal";
+
 export async function persistLaunchpadTrade(payload: LaunchpadTradePayload): Promise<void> {
+  recordLocalTradeActivity({
+    mint: payload.mint,
+    timestamp: payload.timestamp,
+    signature: payload.signature,
+    side: payload.side,
+  });
   try {
     console.log(
       "[trade-history] persist mint:",

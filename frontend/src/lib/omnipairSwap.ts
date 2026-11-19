@@ -395,6 +395,9 @@ export type SendOmnipairSwapTxParams = {
 export async function sendOmnipairSwapTx(
   params: SendOmnipairSwapTxParams
 ): Promise<OmnipairSwapTxResult> {
+  const { sendDuskSwapTx } = await import("./duskMarket");
+  return sendDuskSwapTx(params);
+
   const { connection, wallet, snapshot, side, amountUi, slippagePercent } = params;
   const owner = wallet.publicKey;
   if (!owner) throw new Error("Wallet not connected");

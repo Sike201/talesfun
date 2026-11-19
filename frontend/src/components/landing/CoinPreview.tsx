@@ -1,13 +1,15 @@
 "use client";
 
 import Image from "next/image";
-import { GRADUATION_SOL } from "@/types";
+import { FIXED_SUPPLY, GRADUATION_SOL } from "@/types";
 
 type Props = {
   name: string;
   ticker: string;
   description: string;
   imagePreview: string;
+  launchFeeSol?: string | null;
+  creatorFeePct?: number;
 };
 
 export default function CoinPreview({
@@ -15,54 +17,80 @@ export default function CoinPreview({
   ticker,
   description,
   imagePreview,
+  launchFeeSol,
+  creatorFeePct = 1,
 }: Props) {
-  const displayName = name.trim() || "Your coin";
+  const displayName = name.trim() || "Your token";
   const displayTicker = ticker.trim() || "TICKER";
+  const feeLabel =
+    launchFeeSol != null && launchFeeSol !== ""
+      ? `~${launchFeeSol} SOL`
+      : "Vault rent";
 
   return (
-    <aside className="rounded-2xl bg-white/[0.035] p-5">
-      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/40">
-        Preview
+    <aside className="lg:sticky lg:top-20">
+      <p className="mb-3 text-[12px] font-medium uppercase tracking-[0.14em] text-white/35">
+        On the board
       </p>
 
-      <div className="mt-4 overflow-hidden rounded-2xl bg-black/40">
-        <div className="relative aspect-square w-full bg-white/[0.04]">
+      <div className="overflow-hidden rounded-xl border border-white/[0.09] bg-[#0c0c0c]">
+        <div className="relative aspect-square w-full bg-[#111]">
           {imagePreview ? (
             <Image
               src={imagePreview}
               alt=""
               fill
-              className="object-cover"
+              className="object-cover object-center"
               unoptimized
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center px-6 text-center text-sm text-white/30">
-              A preview of how the coin will look
+            <div className="absolute inset-0 flex items-center justify-center text-[13px] font-medium tracking-[0.08em] text-white/25">
+              ${displayTicker}
             </div>
           )}
         </div>
 
-        <div className="space-y-3 p-4">
-          <div>
-            <h3 className="truncate text-[17px] font-semibold text-white">
+        <div className="space-y-3 border-t border-white/[0.06] p-3.5">
+          <div className="flex min-w-0 items-baseline gap-1.5">
+            <h3 className="truncate text-[15px] font-semibold tracking-tight text-white">
               {displayName}
             </h3>
-            <p className="mt-0.5 text-sm text-white/40">${displayTicker}</p>
+            <span className="shrink-0 text-[11px] font-medium text-white/35">
+              ${displayTicker}
+            </span>
           </div>
 
           {description.trim() ? (
-            <p className="line-clamp-3 text-sm leading-relaxed text-white/55">
+            <p className="line-clamp-2 text-[13px] leading-relaxed text-white/45">
               {description.trim()}
             </p>
-          ) : (
-            <p className="text-sm text-white/30">No description yet</p>
-          )}
+          ) : null}
 
-          <div className="flex items-center justify-between border-t border-white/[0.06] pt-3 text-xs text-white/40">
-            <span>Bonding curve</span>
-            <span className="tabular-nums text-white/65">
-              0 / {GRADUATION_SOL} SOL
-            </span>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-3 border-t border-white/[0.06] pt-3">
+            <div>
+              <p className="text-[11px] text-white/35">Supply</p>
+              <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
+                {FIXED_SUPPLY.toLocaleString("en-US")}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-white/35">Graduates at</p>
+              <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
+                {GRADUATION_SOL} SOL
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-white/35">Creator fee</p>
+              <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
+                {creatorFeePct.toFixed(1)}%
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-white/35">Launch fee</p>
+              <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
+                {feeLabel}
+              </p>
+            </div>
           </div>
         </div>
       </div>
