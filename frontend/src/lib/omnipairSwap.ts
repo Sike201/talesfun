@@ -27,6 +27,7 @@ import {
 } from "./omnipairProgram";
 import {
   fetchOmnipairPoolSnapshot,
+  type FetchOmnipairPoolSnapshotResult,
   type OmnipairPoolSnapshot,
 } from "./omnipairPoolState";
 import { priceSolFromRawDecimals } from "./utils";
@@ -475,9 +476,12 @@ export async function sendOmnipairSwapTx(
       null
     );
     if (!fresh.ok) {
-      throw new Error(`Sell quote: could not refresh pool — ${fresh.message}`);
+      const fail = fresh as Extract<FetchOmnipairPoolSnapshotResult, { ok: false }>;
+      throw new Error(`Sell quote: could not refresh pool. ${fail.message}`);
     }
-    const q = fresh.data;
+    const q: OmnipairPoolSnapshot = (
+      fresh as Extract<FetchOmnipairPoolSnapshotResult, { ok: true }>
+    ).data;
     const rProj = BigInt(q.reserveProjectRaw);
     const rSol = BigInt(q.reserveSolRaw);
 
@@ -627,39 +631,42 @@ export async function sendOmnipairSwapTx(
       skipPreflight: false,
       maxRetries: 3,
     });
-  } catch (e) {
-    if (recoveredSignature && isDuplicateOrAlreadyProcessedError(e)) {
+  } catch (e: unknown) {
+    if (
+      recoveredSignature !== null &&
+      isDuplicateOrAlreadyProcessedError(e)
+    ) {
+      const recoveredSig = recoveredSignature as string;
       console.warn("[omnipair:swap] duplicate/already-processed send path", {
         side,
-        recoveredSignature,
-        error: e instanceof Error ? e.message : e,
+        recoveredSignature: recoveredSig,
+        error: errorTextDeep(e),
       });
       if (side === "sell") {
         console.warn(
-          "[omnipair:swap] SELL: duplicate/already-processed — polling chain",
-          { recoveredSignature }
+          "[omnipair:swap] SELL: duplicate/already-processed. Polling chain",
+          { recoveredSignature: recoveredSig }
         );
       }
-      const landed = await pollSignatureLanded(connection, recoveredSignature);
+      const landed = await pollSignatureLanded(connection, recoveredSig);
       console.info("[omnipair:swap] duplicate path poll result", {
-        recoveredSignature,
+        recoveredSignature: recoveredSig,
         landed: landed.ok,
-        ...(!landed.ok && "err" in landed ? { err: landed.err } : {}),
       });
       if (landed.ok) {
         console.info("[omnipair:swap] tx treated as success (already on-chain)", {
           side,
-          signature: recoveredSignature,
+          signature: recoveredSig,
         });
         if (side === "sell") {
           console.info(
-            "[omnipair:swap] SELL: duplicate path — final confirmation OK, finalizing",
-            { signature: recoveredSignature }
+            "[omnipair:swap] SELL: duplicate path. Final confirmation OK, finalizing",
+            { signature: recoveredSig }
           );
         }
         return finalizeOmnipairSwapTx(
           connection,
-          recoveredSignature,
+          recoveredSig,
           owner,
           projectMint,
           side,
@@ -670,29 +677,30 @@ export async function sendOmnipairSwapTx(
       }
     }
     const sigFromErr = signatureFromSendErrorMessage(e);
-    if (sigFromErr && isDuplicateOrAlreadyProcessedError(e)) {
+    if (sigFromErr !== null && isDuplicateOrAlreadyProcessedError(e)) {
+      const parsedSig = sigFromErr as string;
       console.warn("[omnipair:swap] duplicate path (signature parsed from error message)", {
-        signature: sigFromErr,
+        signature: parsedSig,
       });
-      const landed = await pollSignatureLanded(connection, sigFromErr);
+      const landed = await pollSignatureLanded(connection, parsedSig);
       console.info("[omnipair:swap] duplicate path poll result (from error message)", {
-        signature: sigFromErr,
+        signature: parsedSig,
         landed: landed.ok,
       });
       if (landed.ok) {
         console.info("[omnipair:swap] tx treated as success", {
           side,
-          signature: sigFromErr,
+          signature: parsedSig,
         });
         if (side === "sell") {
           console.info(
             "[omnipair:swap] SELL: duplicate path (from error message) OK, finalizing",
-            { signature: sigFromErr }
+            { signature: parsedSig }
           );
         }
         return finalizeOmnipairSwapTx(
           connection,
-          sigFromErr,
+          parsedSig,
           owner,
           projectMint,
           side,
