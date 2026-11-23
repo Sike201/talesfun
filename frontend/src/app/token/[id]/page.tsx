@@ -306,7 +306,11 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           timed(
             "supabase_trades",
             fetch(
-              `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=200`
+              `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=200${
+                early.gammPool
+                  ? `&gammPool=${encodeURIComponent(early.gammPool)}`
+                  : ""
+              }`
             ).then(async r => {
               const j = await r.json();
               return { ok: r.ok, status: r.status, body: j };
@@ -458,9 +462,12 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         walletAtQuery,
       });
       try {
+        const gammQ = token?.gammPool
+          ? `&gammPool=${encodeURIComponent(token.gammPool)}`
+          : "";
         const [tradesWrap, volRes] = await Promise.all([
           fetch(
-            `/api/tokens/${encodeURIComponent(apiMint)}/trades?limit=5000`
+            `/api/tokens/${encodeURIComponent(apiMint)}/trades?limit=5000${gammQ}`
           ).then(async r => ({
             ok: r.ok,
             status: r.status,

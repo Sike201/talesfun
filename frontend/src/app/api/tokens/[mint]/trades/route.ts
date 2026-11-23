@@ -7,6 +7,8 @@ import {
 } from "@/lib/omnipairIndexer";
 
 export const dynamic = "force-dynamic";
+/** Allow enough time for one batched RPC sync on Vercel. */
+export const maxDuration = 30;
 
 type Row = {
   id?: string;
@@ -23,7 +25,6 @@ type Row = {
 
 function collectKnownRows(mint: string): Map<string, Row> {
   const bySig = new Map<string, Row>();
-
   for (const t of listLocalTrades(mint)) {
     bySig.set(t.signature, {
       mint: t.mint,
@@ -37,7 +38,6 @@ function collectKnownRows(mint: string): Map<string, Row> {
       source: t.source,
     });
   }
-
   return bySig;
 }
 
@@ -65,7 +65,7 @@ async function mergeSupabaseTrades(mint: string, bySig: Map<string, Row>) {
   }
 }
 
-// GET /api/tokens/[mint]/trades — on-chain Omnipair swaps + local/Supabase journal
+// GET /api/tokens/[mint]/trades — on-chain Omnipair swaps (+ local/Supabase if available)
 export async function GET(
   request: NextRequest,
   ctx: RouteContext<"/api/tokens/[mint]/trades">
@@ -76,44 +76,48 @@ export async function GET(
     const limit = parseInt(searchParams.get("limit") || "50", 10);
     const offset = parseInt(searchParams.get("offset") || "0", 10);
     const skipChain = searchParams.get("skipChain") === "1";
+    const gammPool = searchParams.get("gammPool")?.trim() || undefined;
 
     const bySig = collectKnownRows(mint);
-    await mergeSupabaseTrades(mint, bySig);
+    // Cap Supabase wait — dead host must not block the page.
+    await Promise.race([
+      mergeSupabaseTrades(mint, bySig),
+      new Promise<void>((r) => setTimeout(r, 2500)),
+    ]);
 
-    // Live-index Omnipair swaps from the pair account so Activity does not
-    // depend on cron / Supabase being warm.
+    // Live chain sync is the source of truth on Vercel (ephemeral FS + dead Supabase).
     if (!skipChain) {
       try {
         const connection = getIndexerRpcConnection();
         const indexed = await indexOmnipairSwapsForMint(connection, mint, {
-          limitPerPair: 50,
-          knownSignatures: new Set(bySig.keys()),
+          limitPerPair: Math.min(80, Math.max(limit, 40)),
+          gammPool,
+          // Rebuild activity from chain even when journal is empty.
+          knownSignatures: new Set(),
+          deadlineMs: Date.now() + 18_000,
+          persist: true,
         });
-        if (indexed.swapsIndexed > 0 || indexed.errors.length > 0) {
-          console.info("[trade-history] on-chain sync", {
-            mint,
-            gammPool: indexed.gammPool,
-            signaturesFetched: indexed.signaturesFetched,
-            swapsIndexed: indexed.swapsIndexed,
-            errors: indexed.errors.slice(0, 3),
+        for (const t of indexed.trades) {
+          bySig.set(t.signature, {
+            mint: t.mint,
+            signature: t.signature,
+            side: t.side,
+            wallet: t.wallet,
+            sol_amount_raw: t.sol_amount_raw,
+            token_amount_raw: t.token_amount_raw,
+            price_sol: t.price_sol,
+            timestamp: t.timestamp,
+            source: t.source,
           });
         }
-        // Re-merge after journal writes.
-        for (const t of listLocalTrades(mint)) {
-          if (!bySig.has(t.signature)) {
-            bySig.set(t.signature, {
-              mint: t.mint,
-              signature: t.signature,
-              side: t.side,
-              wallet: t.wallet,
-              sol_amount_raw: t.sol_amount_raw,
-              token_amount_raw: t.token_amount_raw,
-              price_sol: t.price_sol,
-              timestamp: t.timestamp,
-              source: t.source,
-            });
-          }
-        }
+        console.info("[trade-history] on-chain sync", {
+          mint,
+          gammPool: indexed.gammPool,
+          signaturesFetched: indexed.signaturesFetched,
+          swapsIndexed: indexed.swapsIndexed,
+          inMemory: indexed.trades.length,
+          errors: indexed.errors.slice(0, 3),
+        });
       } catch (e) {
         console.warn("[trade-history] on-chain sync failed", mint, e);
       }
@@ -131,7 +135,11 @@ export async function GET(
       "total:",
       rows.length
     );
-    return Response.json(page);
+    return Response.json(page, {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
   } catch (error) {
     return Response.json(
       { error: "Failed to fetch trades", details: String(error) },

@@ -240,6 +240,81 @@ function buildFallbackOmnipairFill(
 }
 
 /**
+ * Derive fill amounts from an already-fetched parsed swap tx (no extra RPC).
+ */
+export function omnipairSwapFillFromParsedTx(
+  tx: {
+    meta: {
+      err: unknown;
+      preTokenBalances?: ReadonlyArray<{
+        mint?: string;
+        owner?: string;
+        uiTokenAmount?: { amount?: string; decimals?: number };
+      }> | null;
+      postTokenBalances?: ReadonlyArray<{
+        mint?: string;
+        owner?: string;
+        uiTokenAmount?: { amount?: string; decimals?: number };
+      }> | null;
+    } | null;
+    blockTime?: number | null;
+  },
+  owner: PublicKey,
+  projectMint: PublicKey
+): OmnipairSwapFill | null {
+  if (!tx.meta || tx.meta.err) return null;
+  const ownerB58 = owner.toBase58();
+  const projB58 = projectMint.toBase58();
+  const pre = tx.meta.preTokenBalances ?? [];
+  const post = tx.meta.postTokenBalances ?? [];
+
+  const bal = (rows: typeof pre) => {
+    const m = new Map<string, string>();
+    for (const b of rows) {
+      if (!b?.mint || b.owner !== ownerB58) continue;
+      m.set(b.mint, b.uiTokenAmount?.amount ?? "0");
+    }
+    return m;
+  };
+  const preM = bal(pre);
+  const postM = bal(post);
+  const mints = new Set([...preM.keys(), ...postM.keys()]);
+  const projDec = readProjectDecimalsFromPostBalances(post, projB58);
+
+  let solDelta = BigInt(0);
+  let tokDelta = BigInt(0);
+  for (const mint of mints) {
+    const a0 = BigInt(preM.get(mint) ?? "0");
+    const a1 = BigInt(postM.get(mint) ?? "0");
+    const d = a1 - a0;
+    if (mint === WSOL_MINT_B58) solDelta += d;
+    else if (mint === projB58) tokDelta += d;
+  }
+
+  const solAbs = bigintAbs(solDelta);
+  const tokAbs = bigintAbs(tokDelta);
+  if (!(solAbs > BigInt(0) && tokAbs > BigInt(0))) return null;
+
+  const blockTime = tx.blockTime;
+  const timestamp =
+    typeof blockTime === "number"
+      ? new Date(blockTime * 1000).toISOString()
+      : new Date().toISOString();
+  const sol_amount_raw = solAbs.toString();
+  const token_amount_raw = tokAbs.toString();
+  return {
+    timestamp,
+    sol_amount_raw,
+    token_amount_raw,
+    price_sol: priceSolFromRawDecimals(
+      sol_amount_raw,
+      token_amount_raw,
+      projDec
+    ),
+  };
+}
+
+/**
  * Read user's WSOL + project token ATA balance deltas from a confirmed swap tx.
  */
 export async function fetchOmnipairSwapFillFromTx(
@@ -248,68 +323,16 @@ export async function fetchOmnipairSwapFillFromTx(
   owner: PublicKey,
   projectMint: PublicKey
 ): Promise<OmnipairSwapFill | null> {
-  const ownerB58 = owner.toBase58();
-  const projB58 = projectMint.toBase58();
-
   for (let attempt = 0; attempt < 6; attempt++) {
     const tx = await connection.getParsedTransaction(signature, {
       commitment: "confirmed",
       maxSupportedTransactionVersion: 0,
     });
-    if (tx?.meta && !tx.meta.err) {
-      const pre = tx.meta.preTokenBalances ?? [];
-      const post = tx.meta.postTokenBalances ?? [];
-
-      const bal = (rows: typeof pre) => {
-        const m = new Map<string, string>();
-        for (const b of rows) {
-          if (!b?.mint || b.owner !== ownerB58) continue;
-          m.set(b.mint, b.uiTokenAmount?.amount ?? "0");
-        }
-        return m;
-      };
-      const preM = bal(pre);
-      const postM = bal(post);
-      const mints = new Set([...preM.keys(), ...postM.keys()]);
-
-      const projDec = readProjectDecimalsFromPostBalances(post, projB58);
-
-      let solDelta = BigInt(0);
-      let tokDelta = BigInt(0);
-
-      for (const mint of mints) {
-        const a0 = BigInt(preM.get(mint) ?? "0");
-        const a1 = BigInt(postM.get(mint) ?? "0");
-        const d = a1 - a0;
-        if (mint === WSOL_MINT_B58) solDelta += d;
-        else if (mint === projB58) tokDelta += d;
-      }
-
-      const solAbs = bigintAbs(solDelta);
-      const tokAbs = bigintAbs(tokDelta);
-
-      if (solAbs > BigInt(0) && tokAbs > BigInt(0)) {
-        const blockTime = tx.blockTime;
-        const timestamp =
-          typeof blockTime === "number"
-            ? new Date(blockTime * 1000).toISOString()
-            : new Date().toISOString();
-        const sol_amount_raw = solAbs.toString();
-        const token_amount_raw = tokAbs.toString();
-        const price_sol = priceSolFromRawDecimals(
-          sol_amount_raw,
-          token_amount_raw,
-          projDec
-        );
-        return {
-          timestamp,
-          sol_amount_raw,
-          token_amount_raw,
-          price_sol,
-        };
-      }
+    if (tx) {
+      const fill = omnipairSwapFillFromParsedTx(tx, owner, projectMint);
+      if (fill) return fill;
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500));
   }
   return null;
 }

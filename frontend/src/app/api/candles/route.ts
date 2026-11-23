@@ -94,10 +94,15 @@ export async function GET(request: NextRequest) {
         const indexed = await indexOmnipairSwapsForMint(
           getIndexerRpcConnection(),
           mint,
-          { limitPerPair: 50 }
+          {
+            limitPerPair: 80,
+            knownSignatures: new Set(),
+            deadlineMs: Date.now() + 18_000,
+            persist: true,
+          }
         );
-        if (indexed.swapsIndexed > 0) {
-          rows = listLocalTrades(mint).map((t) => ({
+        if (indexed.trades.length > 0) {
+          rows = indexed.trades.map((t) => ({
             timestamp: t.timestamp,
             price_sol: t.price_sol,
             sol_amount_raw: t.sol_amount_raw,
