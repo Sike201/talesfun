@@ -11,7 +11,7 @@ import {
 } from "@/hooks/useTokensDirectory";
 import LaunchpadTokenCard from "@/components/markets/LaunchpadTokenCard";
 
-const TABS: { id: DirectoryTab | "near"; label: string }[] = [
+const TABS: { id: DirectoryTab; label: string }[] = [
   { id: "trending", label: "Trending" },
   { id: "new", label: "New" },
   { id: "near", label: "Near graduation" },
@@ -30,27 +30,14 @@ const positionSpring = {
 export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: string }) {
   const searchParams = useSearchParams();
   const queryParam = searchParams.get("q") ?? initialQuery;
-  const [tab, setTab] = useState<DirectoryTab | "near">("trending");
+  const [tab, setTab] = useState<DirectoryTab>("trending");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const { sortedTrending, filterByTab, loading } = useTokensDirectory();
 
-  const list = useMemo(() => {
-    if (tab === "near") {
-      const q = queryParam.trim().toLowerCase();
-      return sortedTrending.filter(t => {
-        if (t.phase !== "ready_to_graduate" && t.phase !== "bonding") return false;
-        if (t.phase === "bonding") {
-          const p = t.targetSOL > 0 ? (t.solRaised / t.targetSOL) * 100 : 0;
-          if (p < 70) return false;
-        }
-        if (!q) return true;
-        return (
-          t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)
-        );
-      });
-    }
-    return filterByTab(tab, queryParam);
-  }, [tab, queryParam, filterByTab, sortedTrending]);
+  const list = useMemo(
+    () => filterByTab(tab, queryParam),
+    [tab, queryParam, filterByTab]
+  );
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);

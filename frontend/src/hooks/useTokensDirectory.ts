@@ -13,16 +13,34 @@ import {
 } from "@/lib/metadata";
 import { setExploreListCache, takeExploreListCacheIfFresh } from "@/lib/exploreListCache";
 import { readLocalTradeActivity } from "@/lib/recentActivityLocal";
-import { DEMO_TOKEN } from "@/lib/demoMarket";
+import { isDemoMarketMint } from "@/lib/demoMarket";
 import type { Token } from "@/types";
 
-export type DirectoryTab = "trending" | "graduated" | "new";
+export type DirectoryTab = "trending" | "new" | "near" | "graduated";
+
+function bondingProgressPct(t: Token): number {
+  if (t.phase === "ready_to_graduate" || t.phase === "graduated") return 100;
+  if (!(t.targetSOL > 0)) return 0;
+  return (t.solRaised / t.targetSOL) * 100;
+}
+
+function lastTradeMs(
+  mint: string,
+  lastTradeByMint: Record<string, { timestamp: string }>
+): number {
+  const ts = lastTradeByMint[mint]?.timestamp;
+  if (!ts) return 0;
+  const n = new Date(ts).getTime();
+  return Number.isFinite(n) ? n : 0;
+}
 
 export function useTokensDirectory() {
   const { connection } = useConnection();
   const [tokens, setTokens] = useState<Token[] | null>(null);
   const [solUsd, setSolUsd] = useState<number | null>(null);
-  const [vol24hLamportsByMint, setVol24hLamportsByMint] = useState<Record<string, string>>({});
+  const [vol24hLamportsByMint, setVol24hLamportsByMint] = useState<
+    Record<string, string>
+  >({});
   const [lastTradeByMint, setLastTradeByMint] = useState<
     Record<string, { timestamp: string; signature?: string; side?: string }>
   >({});
@@ -30,7 +48,9 @@ export function useTokensDirectory() {
   useEffect(() => {
     const cached = takeExploreListCacheIfFresh();
     if (cached) {
-      setTokens(cached.tokens);
+      // Never resurrect the old Aether demo from a stale client cache.
+      const cleaned = cached.tokens.filter(t => !isDemoMarketMint(t.mint));
+      setTokens(cleaned);
       setSolUsd(cached.solUsd);
       setVol24hLamportsByMint(cached.vol24hLamportsByMint);
     }
@@ -63,7 +83,9 @@ export function useTokensDirectory() {
         setSolUsd(su ?? null);
 
         const vj = volJson as { byMint?: Record<string, string> };
-        setVol24hLamportsByMint(vj.byMint && typeof vj.byMint === "object" ? vj.byMint : {});
+        setVol24hLamportsByMint(
+          vj.byMint && typeof vj.byMint === "object" ? vj.byMint : {}
+        );
 
         const apiRecent =
           recentJson?.byMint && typeof recentJson.byMint === "object"
@@ -74,10 +96,17 @@ export function useTokensDirectory() {
             ? (devRecentJson as Record<string, { timestamp: string }>)
             : {};
         const localRecent = readLocalTradeActivity();
-        const mergedRecent: Record<string, { timestamp: string }> = { ...devRecent, ...apiRecent };
+        const mergedRecent: Record<string, { timestamp: string }> = {
+          ...devRecent,
+          ...apiRecent,
+        };
         for (const [m, row] of Object.entries(localRecent)) {
+          if (isDemoMarketMint(m)) continue;
           const prev = mergedRecent[m];
-          if (!prev || new Date(row.timestamp).getTime() > new Date(prev.timestamp).getTime()) {
+          if (
+            !prev ||
+            new Date(row.timestamp).getTime() > new Date(prev.timestamp).getTime()
+          ) {
             mergedRecent[m] = { timestamp: row.timestamp };
           }
         }
@@ -86,14 +115,21 @@ export function useTokensDirectory() {
         const sbRows = Array.isArray(sbJson) ? sbJson : [];
         const byMint = supabaseTokensByMint(sbRows);
         const merged = (chainList ?? [])
+          .filter(t => !isDemoMarketMint(t.mint))
           .map(t => mergeTokenMetadataFromSupabaseRow(t, byMint.get(t.mint)))
           .map(t => applyTokenMarketCapUsd(t, su));
         setTokens(merged);
-        setExploreListCache({ tokens: merged, vol24hLamportsByMint: vj.byMint ?? {}, solUsd: su ?? null });
+        setExploreListCache({
+          tokens: merged,
+          vol24hLamportsByMint: vj.byMint ?? {},
+          solUsd: su ?? null,
+        });
 
         void enrichTokensWithMetadata(merged, null).then(enriched => {
           if (!cancelled) {
-            const next = enriched.map(t => applyTokenMarketCapUsd(t, su));
+            const next = enriched
+              .filter(t => !isDemoMarketMint(t.mint))
+              .map(t => applyTokenMarketCapUsd(t, su));
             setTokens(next);
             setExploreListCache({
               tokens: next,
@@ -112,8 +148,12 @@ export function useTokensDirectory() {
       setLastTradeByMint(prev => {
         const next = { ...prev };
         for (const [m, row] of Object.entries(localRecent)) {
+          if (isDemoMarketMint(m)) continue;
           const p = next[m];
-          if (!p || new Date(row.timestamp).getTime() > new Date(p.timestamp).getTime()) {
+          if (
+            !p ||
+            new Date(row.timestamp).getTime() > new Date(p.timestamp).getTime()
+          ) {
             next[m] = { timestamp: row.timestamp };
           }
         }
@@ -129,20 +169,12 @@ export function useTokensDirectory() {
 
   const volLamports = (mint: string) => BigInt(vol24hLamportsByMint[mint] ?? "0");
 
+  /** Trending = most recently traded, then 24h volume, then mcap. */
   const sortedTrending = useMemo(() => {
-    const base = tokens ?? [];
-    const list = base.some(t => t.mint === DEMO_TOKEN.mint)
-      ? [...base]
-      : [DEMO_TOKEN, ...base];
+    const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
     list.sort((a, b) => {
-      if (a.mint === DEMO_TOKEN.mint) return -1;
-      if (b.mint === DEMO_TOKEN.mint) return 1;
-      const ta = lastTradeByMint[a.mint]?.timestamp
-        ? new Date(lastTradeByMint[a.mint]!.timestamp).getTime()
-        : 0;
-      const tb = lastTradeByMint[b.mint]?.timestamp
-        ? new Date(lastTradeByMint[b.mint]!.timestamp).getTime()
-        : 0;
+      const ta = lastTradeMs(a.mint, lastTradeByMint);
+      const tb = lastTradeMs(b.mint, lastTradeByMint);
       if (ta !== tb) return tb - ta;
       const va = volLamports(a.mint);
       const vb = volLamports(b.mint);
@@ -152,15 +184,40 @@ export function useTokensDirectory() {
     return list;
   }, [tokens, lastTradeByMint, vol24hLamportsByMint]);
 
+  /** New = most recently created (any phase). */
+  const sortedNew = useMemo(() => {
+    const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
+    list.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return list;
+  }, [tokens]);
+
   function filterByTab(tab: DirectoryTab, query: string): Token[] {
     const q = query.trim().toLowerCase();
-    let list = sortedTrending;
-    if (tab === "graduated") list = list.filter(t => t.phase === "graduated");
-    else if (tab === "new")
-      list = list.filter(t => t.phase === "bonding" || t.phase === "ready_to_graduate");
+    let list: Token[];
+    switch (tab) {
+      case "trending":
+        list = sortedTrending;
+        break;
+      case "new":
+        list = sortedNew;
+        break;
+      case "near":
+        list = sortedNew.filter(t => {
+          if (t.phase === "graduated") return false;
+          if (t.phase === "ready_to_graduate") return true;
+          return bondingProgressPct(t) >= 75;
+        });
+        break;
+      case "graduated":
+        list = sortedTrending.filter(t => t.phase === "graduated");
+        break;
+      default:
+        list = sortedTrending;
+    }
     if (q) {
       list = list.filter(
-        t => t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)
+        t =>
+          t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)
       );
     }
     return list;
@@ -172,6 +229,7 @@ export function useTokensDirectory() {
     vol24hLamportsByMint,
     lastTradeByMint,
     sortedTrending,
+    sortedNew,
     filterByTab,
     loading: tokens === null,
   };
