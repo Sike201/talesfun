@@ -106,7 +106,7 @@ export default function TokenGraduatedActivity({
             })
           ) : (
             <p className="px-1 py-14 text-center text-sm text-white/40">
-              No trades indexed yet. Swap from the panel on the right — activity saves locally until Supabase is bootstrapped.
+              No on-chain swaps found for this token yet. Activity fills from Omnipair pair transactions as they land.
             </p>
           )}
         </div>

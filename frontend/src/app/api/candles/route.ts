@@ -9,6 +9,10 @@ import {
 } from "@/lib/candles";
 import { generateDemoCandles, isDemoMarketMint } from "@/lib/demoMarket";
 import { listLocalTrades } from "@/lib/localTradeStore";
+import {
+  getIndexerRpcConnection,
+  indexOmnipairSwapsForMint,
+} from "@/lib/omnipairIndexer";
 
 export const dynamic = "force-dynamic";
 
@@ -84,6 +88,30 @@ export async function GET(request: NextRequest) {
       (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
     );
 
+    // If journal is cold, pull Omnipair swaps from the pair account first.
+    if (rows.length === 0) {
+      try {
+        const indexed = await indexOmnipairSwapsForMint(
+          getIndexerRpcConnection(),
+          mint,
+          { limitPerPair: 50 }
+        );
+        if (indexed.swapsIndexed > 0) {
+          rows = listLocalTrades(mint).map((t) => ({
+            timestamp: t.timestamp,
+            price_sol: t.price_sol,
+            sol_amount_raw: t.sol_amount_raw,
+          }));
+          source = "local";
+          rows = [...rows].sort(
+            (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
+          );
+        }
+      } catch (e) {
+        console.warn("[candles] on-chain sync failed", mint, e);
+      }
+    }
+
     if (rows.length === 0) {
       return Response.json({
         mint,
@@ -92,7 +120,7 @@ export async function GET(request: NextRequest) {
         count: 0,
         empty: true,
         source,
-        hint: "No indexed trades yet — run scripts/devnet-index-omnipair-trades.ts after swaps",
+        hint: "No on-chain Omnipair swaps found for this mint yet",
       });
     }
 

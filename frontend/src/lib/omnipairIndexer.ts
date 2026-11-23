@@ -8,8 +8,13 @@ import {
 } from "@solana/web3.js";
 import { NATIVE_MINT } from "@solana/spl-token";
 import { OMNIPAIR_PROGRAM_ID } from "@/lib/omnipairProgram";
-import { fetchGraduatedOmnipairMintsFromChain } from "@/lib/program";
-import { supabaseAdmin } from "@/lib/supabase-server";
+import {
+  fetchGraduatedOmnipairMintsFromChain,
+  getReadOnlyProgram,
+  getTokenStatePDA,
+  chainPhaseLabelFromTokenState,
+} from "@/lib/program";
+import { listLocalTrades } from "@/lib/localTradeStore";
 import { fetchOmnipairSwapFillFromTx } from "@/lib/omnipairSwap";
 import {
   upsertCanonicalTrade,
@@ -110,7 +115,187 @@ export type OmnipairIndexerRunResult = {
 export type RunOmnipairIndexerOptions = {
   /** Max signatures to pull per pair (newest first). Default 40. */
   limitPerPair?: number;
+  /** Known signatures to skip (local + Supabase). */
+  knownSignatures?: Set<string>;
 };
+
+export type IndexMintResult = {
+  mint: string;
+  gammPool: string | null;
+  signaturesFetched: number;
+  swapsIndexed: number;
+  skippedNonSwap: number;
+  skippedNoFill: number;
+  errors: string[];
+};
+
+/**
+ * Resolve graduated mint → Omnipair pair from on-chain `token_state`.
+ */
+export async function resolveOmnipairPairForMint(
+  connection: Connection,
+  mintB58: string
+): Promise<{ mint: string; gammPool: string } | null> {
+  let mintPk: PublicKey;
+  try {
+    mintPk = new PublicKey(mintB58);
+  } catch {
+    return null;
+  }
+  const [pda] = getTokenStatePDA(mintPk);
+  const ro = getReadOnlyProgram(connection);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = await (ro.account as any).tokenState.fetch(pda);
+    const phase = chainPhaseLabelFromTokenState(state);
+    if (phase !== "graduated") return null;
+    const gamm = state.gammPool as PublicKey;
+    if (!gamm || gamm.equals(PublicKey.default)) return null;
+    return { mint: mintPk.toBase58(), gammPool: gamm.toBase58() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Index Omnipair swaps for one mint by scanning `getSignaturesForAddress(gamm_pool)`.
+ * Writes through `upsertCanonicalTrade` (local journal + Supabase).
+ */
+export async function indexOmnipairSwapsForMint(
+  connection: Connection,
+  mintB58: string,
+  options: RunOmnipairIndexerOptions & { gammPool?: string } = {}
+): Promise<IndexMintResult> {
+  const limitPerPair = options.limitPerPair ?? 40;
+  const result: IndexMintResult = {
+    mint: mintB58,
+    gammPool: null,
+    signaturesFetched: 0,
+    swapsIndexed: 0,
+    skippedNonSwap: 0,
+    skippedNoFill: 0,
+    errors: [],
+  };
+
+  let pairB58 = options.gammPool?.trim() ?? "";
+  if (!gammPoolIsUsable(pairB58)) {
+    const resolved = await resolveOmnipairPairForMint(connection, mintB58);
+    if (!resolved) {
+      return result;
+    }
+    pairB58 = resolved.gammPool;
+    mintB58 = resolved.mint;
+    result.mint = mintB58;
+  }
+  result.gammPool = pairB58;
+
+  let pairPk: PublicKey;
+  let projectMint: PublicKey;
+  try {
+    pairPk = new PublicKey(pairB58);
+    projectMint = new PublicKey(mintB58);
+  } catch (e) {
+    result.errors.push(`bad pubkey mint=${mintB58}: ${String(e)}`);
+    return result;
+  }
+
+  const known =
+    options.knownSignatures ??
+    new Set(listLocalTrades(mintB58).map((t) => t.signature));
+
+  let sigInfos: Awaited<ReturnType<Connection["getSignaturesForAddress"]>>;
+  try {
+    sigInfos = await connection.getSignaturesForAddress(pairPk, {
+      limit: limitPerPair,
+    });
+  } catch (e) {
+    result.errors.push(`getSignaturesForAddress pair=${pairB58}: ${String(e)}`);
+    return result;
+  }
+
+  result.signaturesFetched = sigInfos.length;
+  let consecutiveKnown = 0;
+
+  for (const info of sigInfos) {
+    const { signature } = info;
+
+    if (known.has(signature)) {
+      consecutiveKnown += 1;
+      // Newest-first: a short run of known sigs means we're caught up.
+      if (consecutiveKnown >= 3) break;
+      continue;
+    }
+    consecutiveKnown = 0;
+
+    let parsed: ParsedTransactionWithMeta | null;
+    try {
+      parsed = await connection.getParsedTransaction(signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+    } catch (e) {
+      result.errors.push(`getParsedTransaction ${signature}: ${String(e)}`);
+      continue;
+    }
+
+    if (!parsed?.meta || parsed.meta.err) {
+      continue;
+    }
+
+    const swapMeta = parseOmnipairSwapMetaFromTx(
+      parsed,
+      OMNIPAIR_PROGRAM_ID,
+      mintB58
+    );
+    if (!swapMeta) {
+      result.skippedNonSwap += 1;
+      continue;
+    }
+
+    const fill = await fetchOmnipairSwapFillFromTx(
+      connection,
+      signature,
+      new PublicKey(swapMeta.userB58),
+      projectMint
+    );
+    if (!fill) {
+      result.skippedNoFill += 1;
+      console.warn("[omnipair:indexer] swap without parseable token balances", {
+        signature,
+        mint: mintB58,
+      });
+      continue;
+    }
+
+    const tradeRow: CanonicalTradeRow = {
+      mint: mintB58,
+      signature,
+      side: swapMeta.side,
+      sol_amount_raw: fill.sol_amount_raw,
+      token_amount_raw: fill.token_amount_raw,
+      timestamp: fill.timestamp,
+      wallet: swapMeta.userB58,
+      price_sol: fill.price_sol,
+      source: "omnipair",
+    };
+
+    const up = await upsertCanonicalTrade(tradeRow);
+    if (!up.ok) {
+      result.errors.push(`upsert ${signature}: ${up.error}`);
+      continue;
+    }
+
+    known.add(signature);
+    result.swapsIndexed += 1;
+    console.info("[omnipair:indexer] indexed swap", {
+      mint: mintB58,
+      signature,
+      side: swapMeta.side,
+    });
+  }
+
+  return result;
+}
 
 /**
  * MVP: poll `getSignaturesForAddress(pair)` for each graduated token with a real `gamm_pool`,
@@ -140,118 +325,17 @@ export async function runOmnipairSwapIndexer(
   }
 
   for (const row of graduatedPairs) {
-    const mintB58 = row.mint;
     result.tokensScanned += 1;
-
-    const pairB58 = row.gammPool.trim();
-    if (!gammPoolIsUsable(pairB58)) {
-      continue;
-    }
-
-    let pairPk: PublicKey;
-    let projectMint: PublicKey;
-    try {
-      pairPk = new PublicKey(pairB58);
-      projectMint = new PublicKey(mintB58);
-    } catch (e) {
-      result.errors.push(`bad pubkey mint=${mintB58}: ${String(e)}`);
-      continue;
-    }
-
-    let sigInfos: Awaited<
-      ReturnType<Connection["getSignaturesForAddress"]>
-    >;
-    try {
-      sigInfos = await connection.getSignaturesForAddress(pairPk, {
-        limit: limitPerPair,
-      });
-    } catch (e) {
-      result.errors.push(
-        `getSignaturesForAddress pair=${pairB58}: ${String(e)}`
-      );
-      continue;
-    }
-
-    result.signaturesFetched += sigInfos.length;
-
-    for (const info of sigInfos) {
-      const { signature } = info;
-
-      const { data: existing } = await supabaseAdmin
-        .from("trades")
-        .select("signature")
-        .eq("signature", signature)
-        .maybeSingle();
-
-      if (existing) {
-        break;
-      }
-
-      let parsed: ParsedTransactionWithMeta | null;
-      try {
-        parsed = await connection.getParsedTransaction(signature, {
-          commitment: "confirmed",
-          maxSupportedTransactionVersion: 0,
-        });
-      } catch (e) {
-        result.errors.push(`getParsedTransaction ${signature}: ${String(e)}`);
-        continue;
-      }
-
-      if (!parsed?.meta || parsed.meta.err) {
-        continue;
-      }
-
-      const swapMeta = parseOmnipairSwapMetaFromTx(
-        parsed,
-        OMNIPAIR_PROGRAM_ID,
-        mintB58
-      );
-      if (!swapMeta) {
-        result.skippedNonSwap += 1;
-        continue;
-      }
-
-      const fill = await fetchOmnipairSwapFillFromTx(
-        connection,
-        signature,
-        new PublicKey(swapMeta.userB58),
-        projectMint
-      );
-      if (!fill) {
-        result.skippedNoFill += 1;
-        console.warn("[omnipair:indexer] swap without parseable token balances", {
-          signature,
-          mint: mintB58,
-        });
-        continue;
-      }
-
-      const tradeRow: CanonicalTradeRow = {
-        mint: mintB58,
-        signature,
-        side: swapMeta.side,
-        sol_amount_raw: fill.sol_amount_raw,
-        token_amount_raw: fill.token_amount_raw,
-        timestamp: fill.timestamp,
-        wallet: swapMeta.userB58,
-        price_sol: fill.price_sol,
-        source: "omnipair",
-      };
-
-      const up = await upsertCanonicalTrade(tradeRow);
-      if (!up.ok) {
-        result.errors.push(`upsert ${signature}: ${up.error}`);
-        continue;
-      }
-
-      result.swapsIndexed += 1;
-      console.info("[omnipair:indexer] indexed swap", {
-        mint: mintB58,
-        signature,
-        side: swapMeta.side,
-      });
-    }
+    const per = await indexOmnipairSwapsForMint(connection, row.mint, {
+      limitPerPair,
+      gammPool: row.gammPool,
+      knownSignatures: options.knownSignatures,
+    });
+    result.signaturesFetched += per.signaturesFetched;
+    result.swapsIndexed += per.swapsIndexed;
+    result.skippedNonSwap += per.skippedNonSwap;
+    result.skippedNoFill += per.skippedNoFill;
+    result.errors.push(...per.errors);
   }
 
   return result;
