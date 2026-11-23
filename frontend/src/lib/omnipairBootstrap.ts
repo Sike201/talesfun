@@ -8,11 +8,14 @@ import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import {
   ACCOUNT_SIZE,
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
   createAssociatedTokenAccountInstruction,
+  createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
   MINT_SIZE,
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
 import {
   AddressLookupTableProgram,
@@ -63,7 +66,99 @@ const MPL_TOKEN_METADATA = new PublicKey(
   "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 );
 
+/**
+ * Solana incinerator — permanently lock bootstrap LP by transferring it here.
+ * Do NOT call Omnipair withdraw / remove_liquidity (that would drain pool reserves).
+ */
+const LP_INCINERATOR = new PublicKey(
+  "1nc1nerator11111111111111111111111111111111"
+);
+
 const OMNIPAIR_VERSION = 1;
+
+/**
+ * Transfer 100% of claimable bootstrap LP to the incinerator so seeded liquidity
+ * stays locked forever. Calling remove_liquidity would redeem LP for reserves —
+ * transferring to a dead address keeps the pool intact (standard AMM lock).
+ */
+async function lockBootstrapLpAtIncinerator(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  lpMint: PublicKey;
+  ownerLpAta: PublicKey;
+}): Promise<string | null> {
+  const { connection, wallet, lpMint, ownerLpAta } = params;
+  const mintInfo = await connection.getAccountInfo(lpMint, "confirmed");
+  if (!mintInfo) {
+    console.warn("[omnipair bootstrap] LP mint missing; skip incinerator lock");
+    return null;
+  }
+  const tokenProgram = mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+    ? TOKEN_2022_PROGRAM_ID
+    : TOKEN_PROGRAM_ID;
+
+  const bal = await connection.getTokenAccountBalance(ownerLpAta, "confirmed").catch(() => null);
+  const raw = bal?.value.amount ?? "0";
+  if (raw === "0") {
+    console.info("[omnipair bootstrap] no claimable LP to lock at incinerator");
+    return null;
+  }
+  const amount = BigInt(raw);
+  const decimals = bal?.value.decimals ?? 9;
+  const incineratorAta = getAssociatedTokenAddressSync(
+    lpMint,
+    LP_INCINERATOR,
+    true,
+    tokenProgram
+  );
+
+  const ixs: TransactionInstruction[] = [];
+  if (!(await connection.getAccountInfo(incineratorAta, "confirmed"))) {
+    ixs.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        wallet.publicKey,
+        incineratorAta,
+        LP_INCINERATOR,
+        lpMint,
+        tokenProgram
+      )
+    );
+  }
+  ixs.push(
+    createTransferCheckedInstruction(
+      ownerLpAta,
+      lpMint,
+      incineratorAta,
+      wallet.publicKey,
+      amount,
+      decimals,
+      [],
+      tokenProgram
+    )
+  );
+
+  const tx = new Transaction().add(...ixs);
+  tx.feePayer = wallet.publicKey;
+  const { blockhash, lastValidBlockHeight } =
+    await connection.getLatestBlockhash("confirmed");
+  tx.recentBlockhash = blockhash;
+  const signed = await wallet.signTransaction(tx);
+  const sig = await sendRawConfirmWithDuplicateRecovery({
+    connection,
+    serialize: () => signed.serialize(),
+    recoverSignature: () => signatureFromLegacyTx(signed),
+    blockhash,
+    lastValidBlockHeight,
+    label: "lock bootstrap LP at incinerator",
+  });
+  console.info("[omnipair bootstrap] locked bootstrap LP at incinerator", {
+    lpMint: lpMint.toBase58(),
+    amount: raw,
+    incinerator: LP_INCINERATOR.toBase58(),
+    signature: sig,
+  });
+  return sig;
+}
 
 /** Matches Solana `Pubkey` Ord: lexicographic compare of 32-byte big-endian buffers (not base58 string compare). */
 function orderOmnipairMintsLex(a: PublicKey, b: PublicKey): [PublicKey, PublicKey] {
@@ -140,6 +235,7 @@ export type DefaultOmnipairPoolParams = {
 };
 
 const DEFAULT_POOL: DefaultOmnipairPoolParams = {
+  // Base swap fee 30 bps (0.30%) — matches OMNIPAIR_SWAP_FEE_BPS / product default.
   swapFeeBps: 30,
   halfLife: BigInt(3_600_000),
 };
@@ -735,12 +831,15 @@ async function verifyBootstrapSetGammPool(params: {
   });
 }
 
-// TODO: revert to env — restore reading `NEXT_PUBLIC_OMNIPAIR_BOOTSTRAP_ALT` / `OMNIPAIR_BOOTSTRAP_ALT`
-// once Next inlines the client env correctly; this hardcode is temporary for bootstrap testing.
-const TEMP_BOOTSTRAP_ALT_ADDRESS = "3npcfnabwUQxvVhGgVtsp62nXpZu4VMpBh8f9ry9zukk";
+// Fresh keeper-owned ALT (prior 3npc… hit Solana's 256-address cap after many pools).
+const TEMP_BOOTSTRAP_ALT_ADDRESS = "5BzxwGEtBDSDXjqFJUGTgkYDwf9iMisdrh1JTWGpfPmD";
 
 function readBootstrapAltAddress(): PublicKey {
-  return new PublicKey(TEMP_BOOTSTRAP_ALT_ADDRESS);
+  const fromEnv =
+    process.env.NEXT_PUBLIC_OMNIPAIR_BOOTSTRAP_ALT ||
+    process.env.OMNIPAIR_BOOTSTRAP_ALT ||
+    TEMP_BOOTSTRAP_ALT_ADDRESS;
+  return new PublicKey(fromEnv);
 }
 
 function uniquePubkeys(keys: PublicKey[]): PublicKey[] {
@@ -819,8 +918,16 @@ async function ensureAltContainsAddresses(
     (pk) => !alt.state.addresses.some((a) => a.equals(pk))
   );
 
+  const ALT_MAX = 256;
   while (missing.length > 0) {
-    const chunk = missing.slice(0, EXTEND_ALT_CHUNK);
+    const room = ALT_MAX - alt.state.addresses.length;
+    if (room <= 0) {
+      throw new Error(
+        `Omnipair bootstrap ALT ${lookupTableAddress.toBase58()} is full (${ALT_MAX}). ` +
+          `Create a new ALT (create-omnipair-bootstrap-alt.ts with the keeper keypair) and set NEXT_PUBLIC_OMNIPAIR_BOOTSTRAP_ALT.`
+      );
+    }
+    const chunk = missing.slice(0, Math.min(EXTEND_ALT_CHUNK, room));
     const extendIx = AddressLookupTableProgram.extendLookupTable({
       payer: wallet.publicKey,
       authority: wallet.publicKey,
@@ -1135,9 +1242,12 @@ async function ensureTeamTreasuryWsolAssociatedTokenAccount(params: {
   return { ata, createAtaPrepTxSent: true };
 }
 
+
 /**
- * Create LP mint account (82 bytes, uninitialized) + submit bootstrap tx.
- * Deployer wallet must hold ≥ ~0.2 SOL (pair fee) + rent for Omnipair-created accounts + fees.
+ * Prefer Dusk market graduation when the Dusk program is deployed on this cluster
+ * (mainnet). On clusters without Dusk (typical Solana devnet), fall back to the
+ * launchpad `bootstrap_omnipair_pool` CPI into Omnipair V1 (GP5…), then lock LP
+ * at the incinerator so seeded liquidity cannot be withdrawn.
  */
 export async function sendBootstrapOmnipairPoolTx(params: {
   connection: Connection;
@@ -1151,12 +1261,444 @@ export async function sendBootstrapOmnipairPoolTx(params: {
   /** Log full Omnipair `initialize` account list (index, label, pubkey, flags). */
   logAccountMetas?: boolean;
 }): Promise<string> {
-  const { graduateToDuskMarket } = await import("./duskMarket");
-  return graduateToDuskMarket({
-    connection: params.connection,
-    wallet: params.wallet,
-    mint: params.mint,
-    ticker: params.ticker,
-    lpUri: params.lpUri,
+  const duskProgramId = new PublicKey(
+    process.env.NEXT_PUBLIC_DUSK_PROGRAM_ID ||
+      process.env.NEXT_PUBLIC_OMNIPAIR_PROGRAM_ID ||
+      "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
+  );
+  const duskDeployed = await params.connection.getAccountInfo(duskProgramId, "confirmed");
+  if (duskDeployed?.executable) {
+    const { graduateToDuskMarket } = await import("./duskMarket");
+    return graduateToDuskMarket({
+      connection: params.connection,
+      wallet: params.wallet,
+      mint: params.mint,
+      ticker: params.ticker,
+      lpUri: params.lpUri,
+    });
+  }
+
+  console.info(
+    "[omnipair bootstrap] Dusk program not on this cluster — using Omnipair V1 bootstrap + LP incinerator lock",
+    { duskProgramId: duskProgramId.toBase58() }
+  );
+  return sendBootstrapOmnipairPoolTxV1(params);
+}
+
+
+/**
+ * Create LP mint account (82 bytes, uninitialized) + submit bootstrap tx.
+ * Deployer wallet must hold ≥ ~0.2 SOL (pair fee) + rent for Omnipair-created accounts + fees.
+ */
+async function sendBootstrapOmnipairPoolTxV1(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  mint: PublicKey;
+  /** Ticker / symbol for LP metadata (ASCII). */
+  ticker: string;
+  /** Must be http(s) for Omnipair. */
+  lpUri: string;
+  pool?: DefaultOmnipairPoolParams;
+  /** Log full Omnipair `initialize` account list (index, label, pubkey, flags). */
+  logAccountMetas?: boolean;
+}): Promise<string> {
+  const { connection, wallet, mint, ticker, lpUri } = params;
+  const pool = params.pool ?? DEFAULT_POOL;
+
+  if (!lpUri.startsWith("http")) {
+    throw new Error("lpUri must start with http:// or https:// (Omnipair constraint)");
+  }
+
+  const paramsHash = computeOmnipairParamsHash({
+    swapFeeBps: pool.swapFeeBps,
+    halfLife: pool.halfLife,
   });
+
+  // `mint < NATIVE_MINT` uses JS coercion to base58 strings — wrong vs on-chain `token0 < token1` (byte order).
+  const [token0, token1] = orderOmnipairMintsLex(mint, NATIVE_MINT);
+
+  const [pairPda] = deriveOmnipairPair(token0, token1, paramsHash);
+
+  console.info("[omnipair bootstrap] canonical mint order (byte-lexicographic)", {
+    projectMint: mint.toBase58(),
+    wsolMint: NATIVE_MINT.toBase58(),
+    token0: token0.toBase58(),
+    token1: token1.toBase58(),
+    token0IsWsol: token0.equals(NATIVE_MINT),
+    onChainAmountMapping:
+      token0.equals(NATIVE_MINT)
+        ? "amount0_in=SOL(lamports from vault), amount1_in=project token"
+        : "amount0_in=project token, amount1_in=SOL(lamports from vault)",
+    omnipairPlaceholderAmounts: "initialize ix uses 1/1 placeholders; launchpad overwrites ix data with vault amounts",
+  });
+  const [futarchyPda] = deriveOmnipairFutarchyAuthority();
+
+  const futarchyInfo = await connection.getAccountInfo(futarchyPda, "confirmed");
+  if (!futarchyInfo) {
+    throw new Error(
+      `Omnipair global account futarchy_authority is missing on this cluster (${futarchyPda.toBase58()}). ` +
+        `Derivation is correct (seed "futarchy_authority", program ${OMNIPAIR_PROGRAM_ID.toBase58()}). ` +
+        `Run Omnipair's one-time init_futarchy_authority instruction on the same RPC cluster (devnet/mainnet) before bootstrap. ` +
+        `See https://docs.omnipair.fi/developers/overview and omnipair-rs futarchy instructions.`
+    );
+  }
+
+  const omnipairIdlForCluster = {
+    ...OmnipairIdl,
+    address: OMNIPAIR_PROGRAM_ID.toBase58(),
+  };
+  const omniReadonly = new Program(
+    omnipairIdlForCluster as Omnipair,
+    new AnchorProvider(connection, wallet, { commitment: "confirmed" })
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fa = await (omniReadonly.account as any).futarchyAuthority.fetch(futarchyPda);
+  const teamTreasury = fa.recipients.teamTreasury as PublicKey;
+  const teamTreasuryWsol = getAssociatedTokenAddressSync(
+    NATIVE_MINT,
+    teamTreasury,
+    false
+  );
+
+  const mintAcct = await connection.getAccountInfo(mint, "confirmed");
+  if (!mintAcct) {
+    throw new Error(`Project mint account not found: ${mint.toBase58()}`);
+  }
+  const projectTokenProgram = mintAcct.owner.equals(TOKEN_2022) ? TOKEN_2022 : TOKEN_PROGRAM_ID;
+
+  const rateModelKp = Keypair.generate();
+  const lpMintKp = Keypair.generate();
+
+  const lpMetadata = getMetadataPDA(lpMintKp.publicKey);
+  const deployerLpAta = getAssociatedTokenAddressSync(
+    lpMintKp.publicKey,
+    wallet.publicKey,
+    false
+  );
+  const deployerToken0 = getAssociatedTokenAddressSync(
+    token0,
+    wallet.publicKey,
+    false,
+    TOKEN_PROGRAM_ID
+  );
+  const deployerToken1 = getAssociatedTokenAddressSync(
+    token1,
+    wallet.publicKey,
+    false,
+    projectTokenProgram
+  );
+
+  const reserve0 = deriveOmnipairReserveVault(pairPda, token0)[0];
+  const reserve1 = deriveOmnipairReserveVault(pairPda, token1)[0];
+  const collateral0 = deriveOmnipairCollateralVault(pairPda, token0)[0];
+  const collateral1 = deriveOmnipairCollateralVault(pairPda, token1)[0];
+
+  const placeholderArgs = {
+    swapFeeBps: pool.swapFeeBps,
+    halfLife: new BN(pool.halfLife.toString()),
+    fixedCfBps: null,
+    targetUtilStartBps: null,
+    targetUtilEndBps: null,
+    rateHalfLifeMs: null,
+    minRateBps: null,
+    maxRateBps: null,
+    initialRateBps: null,
+    paramsHash,
+    version: OMNIPAIR_VERSION,
+    amount0In: new BN(1),
+    amount1In: new BN(1),
+    minLiquidityOut: new BN(0),
+    lpName: `${ticker} / SOL (Omnipair)`,
+    lpSymbol: (() => {
+      const base = `${ticker}`.replace(/[^a-zA-Z0-9]/g, "").slice(0, 6);
+      const sym = `${base}omLP`;
+      return sym.length <= 10 ? sym : sym.slice(0, 10);
+    })(),
+    lpUri,
+  };
+
+  const omniIx = await omniReadonly.methods
+    .initialize(placeholderArgs)
+    .accounts({
+      deployer: wallet.publicKey,
+      token0Mint: token0,
+      token1Mint: token1,
+      pair: pairPda,
+      futarchyAuthority: futarchyPda,
+      rateModel: rateModelKp.publicKey,
+      lpMint: lpMintKp.publicKey,
+      lpTokenMetadata: lpMetadata,
+      deployerLpTokenAccount: deployerLpAta,
+      reserve0Vault: reserve0,
+      reserve1Vault: reserve1,
+      collateral0Vault: collateral0,
+      collateral1Vault: collateral1,
+      deployerToken0Account: deployerToken0,
+      deployerToken1Account: deployerToken1,
+      teamTreasury,
+      teamTreasuryWsolAccount: teamTreasuryWsol,
+      systemProgram: SystemProgram.programId,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      token2022Program: TOKEN_2022,
+      tokenMetadataProgram: MPL_TOKEN_METADATA,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      rent: SYSVAR_RENT_PUBKEY,
+      eventAuthority: omnipairEventAuthorityPda(),
+      program: OMNIPAIR_PROGRAM_ID,
+    })
+    .instruction();
+
+  logOmnipairBootstrapRuntimeSnapshot({
+    omniIx,
+    token0,
+    token1,
+    pairPda,
+    futarchyPda,
+    eventAuthority: omnipairEventAuthorityPda(),
+    rateModelPubkey: rateModelKp.publicKey,
+    deployer: wallet.publicKey,
+    paramsHash,
+    poolParams: pool,
+  });
+
+  if (
+    params.logAccountMetas === true ||
+    (typeof process !== "undefined" &&
+      process.env.NEXT_PUBLIC_DEBUG_OMNIPAIR_ACCOUNTS === "1")
+  ) {
+    logLabeledOmnipairMetas(omniIx.keys);
+  }
+
+  const higher = getProgram(wallet, connection);
+
+  const [tokenState] = getTokenStatePDA(mint);
+  const [solVault] = getSolVaultPDA(mint);
+  const tokenVault = getAssociatedTokenAddressSync(mint, solVault, true);
+
+  const config = {
+    swapFeeBps: pool.swapFeeBps,
+    halfLife: new BN(pool.halfLife.toString()),
+    fixedCfBps: null,
+    targetUtilStartBps: null,
+    targetUtilEndBps: null,
+    rateHalfLifeMs: null,
+    minRateBps: null,
+    maxRateBps: null,
+    initialRateBps: null,
+    paramsHash,
+    version: OMNIPAIR_VERSION,
+    minLiquidityOut: new BN(0),
+    lpName: placeholderArgs.lpName,
+    lpSymbol: placeholderArgs.lpSymbol,
+    lpUri,
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bootstrapIx = await (higher.methods as any)
+    .bootstrapOmnipairPool(config)
+    .accounts({
+      tokenState,
+      mint,
+      solVault,
+      tokenVault,
+      deployer: wallet.publicKey,
+      wsolMint: NATIVE_MINT,
+      systemProgram: SystemProgram.programId,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    })
+    .remainingAccounts(
+      omniIx.keys.map((k) => ({
+        pubkey: k.pubkey,
+        isWritable: k.isWritable,
+        isSigner: k.isSigner,
+      }))
+    )
+    .instruction();
+
+  const lamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+  const createMintIx = SystemProgram.createAccount({
+    fromPubkey: wallet.publicKey,
+    newAccountPubkey: lpMintKp.publicKey,
+    lamports,
+    space: MINT_SIZE,
+    programId: TOKEN_PROGRAM_ID,
+  });
+
+  // Single tx: createAccount + bootstrap exceeds Solana legacy 1232-byte cap (~25 Omnipair CPI
+  // metas + launchpad accounts + ix data). Prep tx only allocates the uninitialized LP mint.
+  const prepTx = new Transaction().add(createMintIx);
+  prepTx.feePayer = wallet.publicKey;
+  const prepBlock = await connection.getLatestBlockhash("confirmed");
+  prepTx.recentBlockhash = prepBlock.blockhash;
+  prepTx.partialSign(lpMintKp);
+  logLegacyTxDebug("prep (1/2): create LP mint account", prepTx);
+
+  const signedPrep = await wallet.signTransaction(prepTx);
+  const prepSig = await sendRawConfirmWithDuplicateRecovery({
+    connection,
+    serialize: () => signedPrep.serialize(),
+    recoverSignature: () => signatureFromLegacyTx(signedPrep),
+    blockhash: prepBlock.blockhash,
+    lastValidBlockHeight: prepBlock.lastValidBlockHeight,
+    label: "prep (1/2) create LP mint",
+  });
+  console.info("[omnipair bootstrap] prep tx confirmed:", prepSig);
+
+  await ensureTeamTreasurySystemAccountIfMissing({ connection, teamTreasury });
+
+  await ensureTeamTreasuryWsolAssociatedTokenAccount({
+    connection,
+    wallet,
+    teamTreasury,
+  });
+
+  await ensureDeployerToken0Token1Atas({
+    connection,
+    wallet,
+    token0,
+    token1,
+    deployerToken0,
+    deployerToken1,
+    tokenProgramId0: TOKEN_PROGRAM_ID,
+    tokenProgramId1: projectTokenProgram,
+  });
+
+  const bootstrapAltKey = readBootstrapAltAddress();
+  const altCandidates = altExtendCandidates(
+    bootstrapIx,
+    wallet.publicKey,
+    rateModelKp.publicKey
+  );
+  console.info("[omnipair bootstrap] ALT extend candidates (unique):", altCandidates.length);
+
+  const lookupAccount = await ensureAltContainsAddresses(
+    connection,
+    wallet,
+    bootstrapAltKey,
+    altCandidates
+  );
+
+  const bootBlock = await connection.getLatestBlockhash("confirmed");
+
+  const legacyBootstrapRef = new Transaction().add(bootstrapIx);
+  legacyBootstrapRef.feePayer = wallet.publicKey;
+  legacyBootstrapRef.recentBlockhash = bootBlock.blockhash;
+  legacyBootstrapRef.partialSign(rateModelKp);
+  logLegacyTxDebug(
+    "bootstrap (2/2) legacy reference (same ix; for size comparison only)",
+    legacyBootstrapRef
+  );
+
+  const computeBudgetIxs = bootstrapTx2ComputeBudgetInstructions();
+  console.info("[omnipair bootstrap] bootstrap (2/2) v0 compute budget request", {
+    requestedComputeUnitLimit: clampedBootstrapComputeUnitLimit(),
+    requestedComputeUnitPriceMicroLamports:
+      OMNIPAIR_BOOTSTRAP_COMPUTE_UNIT_PRICE_MICRO > 0
+        ? OMNIPAIR_BOOTSTRAP_COMPUTE_UNIT_PRICE_MICRO
+        : null,
+    note: "Raises CU cap for Omnipair initialize + Metaplex metadata CPI. Override via NEXT_PUBLIC_OMNIPAIR_BOOTSTRAP_COMPUTE_UNITS / _CU_PRICE_MICRO_LAMPORTS.",
+  });
+
+  const messageV0 = new TransactionMessage({
+    payerKey: wallet.publicKey,
+    recentBlockhash: bootBlock.blockhash,
+    instructions: [...computeBudgetIxs, bootstrapIx],
+  }).compileToV0Message([lookupAccount]);
+
+  const vtx = new VersionedTransaction(messageV0);
+  vtx.sign([rateModelKp]);
+
+  logBootstrapV0Debug({
+    label: "bootstrap (2/2) versioned (v0 + ALT)",
+    legacyTx: legacyBootstrapRef,
+    vtx,
+    lookupTableKey: bootstrapAltKey,
+  });
+
+  await logPreBootstrapTx2OmnipairInitializeAudit({
+    connection,
+    teamTreasury,
+    teamTreasuryWsol,
+    lpMint: lpMintKp.publicKey,
+    lpTokenMetadata: lpMetadata,
+    deployerLpTokenAccount: deployerLpAta,
+    deployerToken0Account: deployerToken0,
+    deployerToken1Account: deployerToken1,
+    deployerToken1TokenProgram: projectTokenProgram,
+    reserve0,
+    reserve1,
+    collateral0,
+    collateral1,
+  });
+
+  const signedBoot = await wallet.signTransaction(vtx);
+  const recoveredBootSig = () => signatureFromVersionedTx(signedBoot);
+
+  let bootSig: string;
+  try {
+    bootSig = await sendRawConfirmWithDuplicateRecovery({
+      connection,
+      serialize: () => signedBoot.serialize(),
+      recoverSignature: recoveredBootSig,
+      blockhash: bootBlock.blockhash,
+      lastValidBlockHeight: bootBlock.lastValidBlockHeight,
+      label: "bootstrap (2/2) versioned bootstrap_omnipair_pool",
+    });
+  } catch (e) {
+    const recovered = recoveredBootSig();
+    console.warn("[omnipair bootstrap] bootstrap (2/2) send/poll threw", {
+      error: e instanceof Error ? e.message : e,
+      recoveredSignature: recovered,
+    });
+    if (isTransientConfirmationFailure(e)) {
+      try {
+        await pollSignatureUntilConfirmed(connection, recovered, { timeoutMs: 90_000 });
+        console.info("[omnipair bootstrap] late poll OK after transient error", recovered);
+      } catch (pollLateErr) {
+        console.warn("[omnipair bootstrap] late poll failed (will still check gamm_pool)", pollLateErr);
+      }
+      try {
+        await verifyBootstrapSetGammPool({
+          connection,
+          wallet,
+          mint,
+          bootstrapSig: recovered,
+        });
+        // Lock LP at incinerator — do NOT call remove_liquidity / withdraw.
+        await lockBootstrapLpAtIncinerator({
+          connection,
+          wallet,
+          lpMint: lpMintKp.publicKey,
+          ownerLpAta: deployerLpAta,
+        });
+        return recovered;
+      } catch (verifyErr) {
+        console.warn(
+          "[omnipair bootstrap] gamm_pool still not set after transient error recovery",
+          verifyErr
+        );
+      }
+    }
+    throw e;
+  }
+
+  console.info("[omnipair bootstrap] bootstrap tx confirmed:", bootSig);
+
+  await verifyBootstrapSetGammPool({
+    connection,
+    wallet,
+    mint,
+    bootstrapSig: bootSig,
+  });
+
+  // Permanently lock claimable bootstrap LP (transfer to dead address, not withdraw).
+  await lockBootstrapLpAtIncinerator({
+    connection,
+    wallet,
+    lpMint: lpMintKp.publicKey,
+    ownerLpAta: deployerLpAta,
+  });
+
+  return bootSig;
 }

@@ -2,6 +2,7 @@ import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import {
   ComputeBudgetProgram,
   Connection,
+  Keypair,
   PublicKey,
   SystemProgram,
   Transaction,
@@ -9,11 +10,15 @@ import {
 import bs58 from "bs58";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import {
+  ACCOUNT_SIZE,
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
   createAssociatedTokenAccountInstruction,
+  createCloseAccountInstruction,
+  createInitializeAccount3Instruction,
   createSyncNativeInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
@@ -155,6 +160,18 @@ function quoteSellSolOutCpmm(
   const denom = reserveProjectRaw + amountInProjectRaw;
   if (denom <= BigInt(0)) return BigInt(0);
   return (reserveSolRaw * amountInProjectRaw) / denom;
+}
+
+/** Buy (WSOL → project): Δx = x * Δy / (y + Δy). Mid-price overstates tokens out → SlippageExceeded. */
+function quoteBuyTokenOutCpmm(
+  reserveSolRaw: bigint,
+  reserveProjectRaw: bigint,
+  amountInSolRaw: bigint
+): bigint {
+  if (amountInSolRaw <= BigInt(0)) return BigInt(0);
+  const denom = reserveSolRaw + amountInSolRaw;
+  if (denom <= BigInt(0)) return BigInt(0);
+  return (reserveProjectRaw * amountInSolRaw) / denom;
 }
 
 async function mintOwnerProgram(
@@ -322,32 +339,23 @@ async function buildOmnipairSwapFill(
   snapshot: OmnipairPoolSnapshot,
   amountIn: bigint
 ): Promise<OmnipairSwapFill> {
-  // Sell: skip getParsedTransaction retries — often slow or flaky vs buy; use
-  // spot-based fallback so UI clears as soon as confirmation returns.
-  if (side === "sell") {
-    const fill = buildFallbackOmnipairFill(
-      side,
-      amountUi,
-      snapshot,
-      amountIn
-    );
-    console.info("[omnipair:swap] SELL: fill (fast fallback, skipped chain parse)", {
-      signature,
-      price_sol: fill.price_sol,
-    });
-    return fill;
-  }
-
-  const fromChain = await fetchOmnipairSwapFillFromTx(
-    connection,
-    signature,
-    owner,
-    projectMint
+  // Prefer CPMM/spot fallback immediately so activity + charts update without
+  // waiting on flaky getParsedTransaction (was hanging market-make / buy UI).
+  const fallback = buildFallbackOmnipairFill(
+    side,
+    amountUi,
+    snapshot,
+    amountIn
   );
-  const fill =
-    fromChain ?? buildFallbackOmnipairFill(side, amountUi, snapshot, amountIn);
+  // Best-effort chain parse with a hard timeout — never block the caller.
+  const fromChain = await Promise.race([
+    fetchOmnipairSwapFillFromTx(connection, signature, owner, projectMint),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
+  ]);
+  const fill = fromChain ?? fallback;
   console.info("[omnipair:swap] fill for persist/chart", {
     signature,
+    side,
     parsedFromTx: fromChain != null,
     price_sol: fill.price_sol,
   });
@@ -396,8 +404,18 @@ export type SendOmnipairSwapTxParams = {
 export async function sendOmnipairSwapTx(
   params: SendOmnipairSwapTxParams
 ): Promise<OmnipairSwapTxResult> {
-  const { sendDuskSwapTx } = await import("./duskMarket");
-  return sendDuskSwapTx(params);
+  const duskProgramId = new PublicKey(
+    process.env.NEXT_PUBLIC_DUSK_PROGRAM_ID ||
+      "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
+  );
+  const duskDeployed = await params.connection.getAccountInfo(
+    duskProgramId,
+    "confirmed"
+  );
+  if (duskDeployed?.executable) {
+    const { sendDuskSwapTx } = await import("./duskMarket");
+    return sendDuskSwapTx(params);
+  }
 
   const { connection, wallet, snapshot, side, amountUi, slippagePercent } = params;
   const owner = wallet.publicKey;
@@ -435,8 +453,19 @@ export async function sendOmnipairSwapTx(
     projectTokenProgram
   );
 
-  const userTokenIn = side === "buy" ? userWsolAta : userProjectAta;
-  const userTokenOut = side === "buy" ? userProjectAta : userWsolAta;
+  // Canonical WSOL ATA may be polluted with native SOL (system-owned, 0 data) —
+  // createAssociatedTokenAccount cannot reclaim that address. Fall back to an
+  // ephemeral Token account we can initialize + close in this same swap tx.
+  const wsolAtaInfo = await connection.getAccountInfo(userWsolAta, "confirmed");
+  const wsolAtaIsToken =
+    !!wsolAtaInfo && wsolAtaInfo.owner.equals(TOKEN_PROGRAM_ID);
+  const wsolAtaPolluted =
+    !!wsolAtaInfo && !wsolAtaInfo.owner.equals(TOKEN_PROGRAM_ID);
+  const tempWsolKp = wsolAtaPolluted ? Keypair.generate() : null;
+  const userWsolAccount = tempWsolKp ? tempWsolKp.publicKey : userWsolAta;
+
+  const userTokenIn = side === "buy" ? userWsolAccount : userProjectAta;
+  const userTokenOut = side === "buy" ? userProjectAta : userWsolAccount;
 
   const program = getOmnipairProgram(connection, wallet);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -451,18 +480,44 @@ export async function sendOmnipairSwapTx(
   let amountIn: bigint;
   let minAmountOut: bigint;
 
-   if (side === "buy") {
+  if (side === "buy") {
     amountIn = BigInt(Math.floor(amountUi * 1e9));
     if (amountIn <= BigInt(0)) throw new Error("SOL amount too small");
-    const tokenOutUi = amountUi / spot;
-    const expectedOut = BigInt(
-      Math.floor(tokenOutUi * 10 ** snapshot.projectTokenDecimals)
+
+    const freshBuy = await fetchOmnipairPoolSnapshot(
+      connection,
+      pairPk.toBase58(),
+      projectMint.toBase58(),
+      null
     );
+    if (!freshBuy.ok) {
+      const fail = freshBuy as Extract<FetchOmnipairPoolSnapshotResult, { ok: false }>;
+      throw new Error(`Buy quote: could not refresh pool. ${fail.message}`);
+    }
+    const qBuy: OmnipairPoolSnapshot = (
+      freshBuy as Extract<FetchOmnipairPoolSnapshotResult, { ok: true }>
+    ).data;
+    const rSolBuy = BigInt(qBuy.reserveSolRaw);
+    const rProjBuy = BigInt(qBuy.reserveProjectRaw);
+    const expectedOut = quoteBuyTokenOutCpmm(rSolBuy, rProjBuy, amountIn);
     if (expectedOut <= BigInt(0)) {
-      throw new Error("Expected output too small; increase SOL amount");
+      throw new Error("Expected token output too small (pool quote)");
     }
     minAmountOut = applySlippageFloor(expectedOut, slipBps);
     if (minAmountOut <= BigInt(0)) throw new Error("Min output after slippage is zero");
+    const linearTokens = BigInt(
+      Math.floor((amountUi / Math.max(spot, 1e-18)) * 10 ** snapshot.projectTokenDecimals)
+    );
+    console.info("[omnipair:swap] BUY quote", {
+      rawSolIn: amountIn.toString(),
+      reserveSolRaw: qBuy.reserveSolRaw,
+      reserveProjectRaw: qBuy.reserveProjectRaw,
+      cpmmQuotedTokenOut: expectedOut.toString(),
+      linearSpotEstimateTokens: linearTokens.toString(),
+      slippagePercent,
+      slippageBps: slipBps,
+      minAmountOut: minAmountOut.toString(),
+    });
   } else {
     amountIn = BigInt(
       Math.floor(amountUi * 10 ** snapshot.projectTokenDecimals)
@@ -524,10 +579,34 @@ export async function sendOmnipairSwapTx(
   const ixs = [
     ComputeBudgetProgram.setComputeUnitLimit({ units: CU_SWAP }),
   ];
+  const extraSigners: Keypair[] = [];
 
-  if (!(await connection.getAccountInfo(userWsolAta, "confirmed"))) {
+  if (tempWsolKp) {
+    console.warn(
+      "[omnipair:swap] WSOL ATA is polluted (system-owned); using ephemeral WSOL account",
+      { pollutedAta: userWsolAta.toBase58(), temp: tempWsolKp.publicKey.toBase58() }
+    );
+    const rent = await connection.getMinimumBalanceForRentExemption(ACCOUNT_SIZE);
+    const wrapExtra = side === "buy" ? Number(amountIn) : 0;
     ixs.push(
-      createAssociatedTokenAccountInstruction(
+      SystemProgram.createAccount({
+        fromPubkey: owner,
+        newAccountPubkey: tempWsolKp.publicKey,
+        lamports: rent + wrapExtra,
+        space: ACCOUNT_SIZE,
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      createInitializeAccount3Instruction(
+        tempWsolKp.publicKey,
+        NATIVE_MINT,
+        owner,
+        TOKEN_PROGRAM_ID
+      )
+    );
+    extraSigners.push(tempWsolKp);
+  } else if (!wsolAtaIsToken) {
+    ixs.push(
+      createAssociatedTokenAccountIdempotentInstruction(
         owner,
         userWsolAta,
         owner,
@@ -538,9 +617,15 @@ export async function sendOmnipairSwapTx(
     );
   }
 
-  if (!(await connection.getAccountInfo(userProjectAta, "confirmed"))) {
+  const projectAtaInfo = await connection.getAccountInfo(
+    userProjectAta,
+    "confirmed"
+  );
+  const projectAtaOk =
+    !!projectAtaInfo && projectAtaInfo.owner.equals(projectTokenProgram);
+  if (!projectAtaOk) {
     ixs.push(
-      createAssociatedTokenAccountInstruction(
+      createAssociatedTokenAccountIdempotentInstruction(
         owner,
         userProjectAta,
         owner,
@@ -551,10 +636,10 @@ export async function sendOmnipairSwapTx(
     );
   }
 
-  if (side === "buy") {
+  if (side === "buy" && !tempWsolKp) {
     let existing = BigInt(0);
     try {
-      const b = await connection.getTokenAccountBalance(userWsolAta, "confirmed");
+      const b = await connection.getTokenAccountBalance(userWsolAccount, "confirmed");
       existing = BigInt(b.value.amount);
     } catch {
       existing = BigInt(0);
@@ -568,12 +653,12 @@ export async function sendOmnipairSwapTx(
       ixs.push(
         SystemProgram.transfer({
           fromPubkey: owner,
-          toPubkey: userWsolAta,
+          toPubkey: userWsolAccount,
           lamports: Number(need),
         })
       );
     }
-    ixs.push(createSyncNativeInstruction(userWsolAta));
+    ixs.push(createSyncNativeInstruction(userWsolAccount));
   }
 
   const swapIx = await program.methods
@@ -602,17 +687,34 @@ export async function sendOmnipairSwapTx(
 
   ixs.push(swapIx);
 
+  // Ephemeral WSOL → unwrap native SOL back to the wallet after the swap.
+  if (tempWsolKp) {
+    ixs.push(
+      createCloseAccountInstruction(
+        tempWsolKp.publicKey,
+        owner,
+        owner,
+        [],
+        TOKEN_PROGRAM_ID
+      )
+    );
+  }
+
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
   const tx = new Transaction({
     feePayer: owner,
     recentBlockhash: blockhash,
   });
   tx.add(...ixs);
+  if (extraSigners.length > 0) {
+    tx.partialSign(...extraSigners);
+  }
 
   if (side === "sell") {
     console.info("[omnipair:swap] SELL: submit started (sign next)", {
       amountUi,
       pair: pairPk.toBase58(),
+      usingTempWsol: !!tempWsolKp,
     });
   }
 

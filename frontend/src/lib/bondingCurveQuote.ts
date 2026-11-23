@@ -1,5 +1,5 @@
 import { BN } from "@coral-xyz/anchor";
-import { CREATOR_FEE_BPS } from "@/types";
+import { TOTAL_FEE_BPS } from "@/types";
 import type { Token } from "@/types";
 import { calculateTokensOut, calculateSolOut } from "@/lib/program";
 import { calcBondingCurveProgress } from "@/lib/utils";
@@ -38,7 +38,9 @@ function tryBnFromUnsignedDecimalString(s: string): BN | null {
 export type BondingBuyQuote = {
   grossSolUi: number;
   grossLamports: BN;
+  /** 1% curve fee (stays in vault). Legacy alias kept as creatorFeeLamports for callers. */
   creatorFeeLamports: BN;
+  curveFeeLamports: BN;
   netLamports: BN;
   tokensOutUncappedRaw: BN;
   tokensOutCappedRaw: BN;
@@ -48,7 +50,7 @@ export type BondingBuyQuote = {
 };
 
 export function grossBuyToNetLamports(gross: BN): { fee: BN; net: BN } {
-  const fee = gross.mul(new BN(CREATOR_FEE_BPS)).div(BPS);
+  const fee = gross.mul(new BN(TOTAL_FEE_BPS)).div(BPS);
   const net = gross.sub(fee);
   return { fee, net };
 }
@@ -109,6 +111,7 @@ export function quoteBondingBuy(
     grossSolUi,
     grossLamports,
     creatorFeeLamports: dispFee,
+    curveFeeLamports: dispFee,
     netLamports: dispNet,
     tokensOutUncappedRaw: tokensAtFull,
     tokensOutCappedRaw: tokensCapped,

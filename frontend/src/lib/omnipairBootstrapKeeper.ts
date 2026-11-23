@@ -1,13 +1,12 @@
 /**
- * Server-side Omnipair bootstrap automation (keeper).
+ * Server-side Omnipair / Dusk bootstrap automation (keeper).
  *
- * **Requires a protocol-funded keypair** (`OMNIPAIR_BOOTSTRAP_KEEPER_KEYPAIR_JSON`): this wallet is the
- * Omnipair `deployer` (pays ~0.2 SOL pair fee + rent), receives initial LP to its LP ATA, and must be
- * the **ALT authority** for `readBootstrapAltAddress()` / `NEXT_PUBLIC_OMNIPAIR_BOOTSTRAP_ALT` if the
- * bootstrap path uses that lookup table. It is **not** the project creator; vault liquidity still moves
- * from launchpad PDAs into this deployer’s WSOL/project ATAs during `bootstrap_omnipair_pool`.
+ * **Requires a protocol-funded keypair** (`OMNIPAIR_BOOTSTRAP_KEEPER_KEYPAIR_JSON`) that MUST equal
+ * `NEXT_PUBLIC_PLATFORM_AUTHORITY`. Dusk binds `initializeMarket` payer as market operator, so this
+ * wallet becomes the platform operator for every graduated market.
  *
- * Burn / treasury: unchanged from on-chain launchpad; excess tokens are burned from `token_vault` there.
+ * After seeding, claimable srLP is transferred to the Solana incinerator (liquidity lock) — we never
+ * call Omnipair remove_liquidity / withdraw, which would drain the pool.
  */
 import { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";

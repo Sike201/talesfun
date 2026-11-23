@@ -49,19 +49,19 @@ pub const TOKEN_DECIMALS: u8 = 6;
 
 /// Net SOL into the curve (after creator fee) cumulated in `token_state.sol_raised` before graduation.
 /// Production: **85 SOL** — exhausts ~793.1M bonding tokens (Pump-like completion).
-/// Dev-only: enable Cargo feature `dev-graduation` for **5 SOL** (early graduation ~153M sold; infra/UI tests only).
+/// Dev-only: enable Cargo feature `dev-graduation` for **0.5 SOL** (cheap E2E / infra tests only).
 #[cfg(feature = "dev-graduation")]
-pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 5_000_000_000;
+pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 500_000_000;
 #[cfg(not(feature = "dev-graduation"))]
 pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 85_000_000_000;
 
-/// Creator fee: 50 bps = 0.5%
-pub const CREATOR_FEE_BPS: u16 = 50;
+/// Creator fee removed — no escrow split on buys.
+pub const CREATOR_FEE_BPS: u16 = 0;
 
-/// LP fee: 50 bps = 0.5%
-pub const LP_FEE_BPS: u16 = 50;
+/// Bonding-curve LP fee: 100 bps = 1%. Stays in the curve (vault) as liquidity.
+pub const LP_FEE_BPS: u16 = 100;
 
-/// Total swap fee: 100 bps = 1%
+/// Total bonding-curve fee: 100 bps = 1% (all LP; no creator cut).
 pub const TOTAL_FEE_BPS: u16 = 100;
 
 /// Virtual token reserve for smooth curve — matches pump.fun math
@@ -211,16 +211,17 @@ pub mod higher_launchpad {
 
     /// Buy tokens from the bonding curve.
     /// Uses constant-product AMM: k = virtual_sol * virtual_tokens
-    /// Deducts 0.5% creator fee before curve calculation.
+    /// Deducts 1% curve fee before pricing; the full SOL payment stays in the vault
+    /// so the fee remains as bonding-curve liquidity (no creator escrow split).
     pub fn buy(ctx: Context<Trade>, sol_amount: u64, min_tokens_out: u64) -> Result<()> {
         let token_state = &mut ctx.accounts.token_state;
 
         require!(token_state.phase == TokenPhase::Bonding, LaunchpadError::NotOnBondingCurve);
         require!(sol_amount > 0, LaunchpadError::ZeroAmount);
 
-        // Deduct creator fee before curve calculation
-        let creator_fee = (sol_amount as u128 * CREATOR_FEE_BPS as u128 / 10_000) as u64;
-        let net_sol_amount = sol_amount - creator_fee;
+        // 1% curve fee: price tokens on net, but deposit full gross into the vault.
+        let curve_fee = (sol_amount as u128 * TOTAL_FEE_BPS as u128 / 10_000) as u64;
+        let net_sol_amount = sol_amount - curve_fee;
 
         // Calculate tokens out using net amount after fee
         let tokens_out = calculate_tokens_out(
@@ -232,7 +233,7 @@ pub mod higher_launchpad {
         require!(tokens_out >= min_tokens_out, LaunchpadError::SlippageExceeded);
         require!(tokens_out <= token_state.real_token_reserve, LaunchpadError::InsufficientLiquidity);
 
-        // Transfer net SOL from buyer to sol_vault
+        // Full SOL payment → sol_vault (fee stays in-curve as liquidity)
         anchor_lang::system_program::transfer(
             CpiContext::new(
                 ctx.accounts.system_program.key(),
@@ -241,22 +242,8 @@ pub mod higher_launchpad {
                     to: ctx.accounts.sol_vault.to_account_info(),
                 },
             ),
-            net_sol_amount,
+            sol_amount,
         )?;
-
-        // Transfer creator fee from buyer to fee_escrow PDA
-        if creator_fee > 0 {
-            anchor_lang::system_program::transfer(
-                CpiContext::new(
-                    ctx.accounts.system_program.key(),
-                    anchor_lang::system_program::Transfer {
-                        from: ctx.accounts.user.to_account_info(),
-                        to: ctx.accounts.fee_escrow.to_account_info(),
-                    },
-                ),
-                creator_fee,
-            )?;
-        }
 
         // Transfer tokens from vault to buyer
         let mint_key = token_state.mint;
@@ -274,14 +261,13 @@ pub mod higher_launchpad {
         );
         token::transfer(cpi_ctx, tokens_out)?;
 
-        // Update reserves (using net amount — fee is not part of bonding curve)
-        token_state.virtual_sol_reserve += net_sol_amount;
+        // Reserves include the full gross (fee remains as curve liquidity)
+        token_state.virtual_sol_reserve += sol_amount;
         token_state.virtual_token_reserve -= tokens_out;
-        token_state.real_sol_reserve += net_sol_amount;
+        token_state.real_sol_reserve += sol_amount;
         token_state.real_token_reserve -= tokens_out;
-        token_state.sol_raised += net_sol_amount;
+        token_state.sol_raised += sol_amount;
         token_state.tokens_sold += tokens_out;
-        token_state.creator_fees_accumulated += creator_fee;
 
         emit!(TradeEvent {
             mint: token_state.mint,

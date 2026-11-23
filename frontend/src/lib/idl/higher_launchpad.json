@@ -4,7 +4,7 @@
     "name": "higher_launchpad",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Higher.run — bonding curve launchpad that graduates into an Omnipair Dusk market"
+    "description": "Higher.run — Creator-first bonding curve launchpad with Omnipair GAMM graduation"
   },
   "instructions": [
     {
@@ -407,7 +407,8 @@
       "docs": [
         "Buy tokens from the bonding curve.",
         "Uses constant-product AMM: k = virtual_sol * virtual_tokens",
-        "Deducts 0.5% creator fee before curve calculation."
+        "Deducts 1% curve fee before pricing; the full SOL payment stays in the vault",
+        "so the fee remains as bonding-curve liquidity (no creator escrow split)."
       ],
       "discriminator": [
         102,
@@ -1437,6 +1438,439 @@
       ]
     },
     {
+      "name": "link_dusk_market",
+      "docs": [
+        "Record the Dusk market created by the client SDK. The account must be owned by Dusk."
+      ],
+      "discriminator": [
+        60,
+        112,
+        32,
+        12,
+        59,
+        218,
+        75,
+        72
+      ],
+      "accounts": [
+        {
+          "name": "token_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  107,
+                  101,
+                  110,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_state.mint",
+                "account": "TokenState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "dusk_program",
+          "address": "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
+        },
+        {
+          "name": "deployer",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "release_graduation_reserves",
+      "docs": [
+        "Move terminal-price reserves to the signer. Does not CPI a pool.",
+        "The client then creates the Dusk market with `@omnipair/dusk-sdk` and calls `link_dusk_market`."
+      ],
+      "discriminator": [
+        32,
+        183,
+        46,
+        124,
+        222,
+        178,
+        210,
+        94
+      ],
+      "accounts": [
+        {
+          "name": "token_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  107,
+                  101,
+                  110,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_state.mint",
+                "account": "TokenState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "token_state.mint",
+                "account": "TokenState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "sol_vault"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "deployer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "wsol_mint",
+          "address": "So11111111111111111111111111111111111111112"
+        },
+        {
+          "name": "deployer_wsol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "deployer"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wsol_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "deployer_token",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "deployer"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "sell",
       "docs": [
         "Sell tokens back to the bonding curve."
@@ -1813,445 +2247,6 @@
           "type": "u64"
         }
       ]
-    },
-    {
-      "name": "release_graduation_reserves",
-      "docs": [
-        "Move terminal-price SOL and project tokens from the bonding vault to the signer.",
-        "Does not create a pool. The client opens the Dusk market, then calls link_dusk_market."
-      ],
-      "discriminator": [
-        32,
-        183,
-        46,
-        124,
-        222,
-        178,
-        210,
-        94
-      ],
-      "accounts": [
-        {
-          "name": "token_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  107,
-                  101,
-                  110,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_state.mint",
-                "account": "TokenState"
-              }
-            ]
-          }
-        },
-        {
-          "name": "mint",
-          "writable": true
-        },
-        {
-          "name": "sol_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  111,
-                  108,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_state.mint",
-                "account": "TokenState"
-              }
-            ]
-          }
-        },
-        {
-          "name": "token_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "sol_vault"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "deployer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "wsol_mint",
-          "docs": [
-            "Native SOL wrapped mint (So111...)."
-          ],
-          "address": "So11111111111111111111111111111111111111112"
-        },
-        {
-          "name": "deployer_wsol",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "deployer"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "wsol_mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "deployer_token",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "deployer"
-              },
-              {
-                "kind": "const",
-                "value": [
-                  6,
-                  221,
-                  246,
-                  225,
-                  215,
-                  101,
-                  161,
-                  147,
-                  217,
-                  203,
-                  225,
-                  70,
-                  206,
-                  235,
-                  121,
-                  172,
-                  28,
-                  180,
-                  133,
-                  237,
-                  95,
-                  91,
-                  55,
-                  145,
-                  58,
-                  140,
-                  245,
-                  133,
-                  126,
-                  255,
-                  0,
-                  169
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "token_program",
-          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "link_dusk_market",
-      "docs": [
-        "Store a Dusk market address on token_state.gamm_pool.",
-        "The market account must be owned by the Dusk program."
-      ],
-      "discriminator": [
-        60,
-        112,
-        32,
-        12,
-        59,
-        218,
-        75,
-        72
-      ],
-      "accounts": [
-        {
-          "name": "token_state",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  107,
-                  101,
-                  110,
-                  95,
-                  115,
-                  116,
-                  97,
-                  116,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "token_state.mint",
-                "account": "TokenState"
-              }
-            ]
-          }
-        },
-        {
-          "name": "mint",
-          "writable": false
-        },
-        {
-          "name": "market"
-        },
-        {
-          "name": "dusk_program",
-          "address": "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
-        },
-        {
-          "name": "deployer",
-          "writable": false,
-          "signer": true
-        }
-      ],
-      "args": []
     }
   ],
   "accounts": [
@@ -2284,6 +2279,19 @@
   ],
   "events": [
     {
+      "name": "DuskMarketLinked",
+      "discriminator": [
+        128,
+        100,
+        121,
+        143,
+        242,
+        148,
+        109,
+        53
+      ]
+    },
+    {
       "name": "FeesClaimed",
       "discriminator": [
         22,
@@ -2307,6 +2315,19 @@
         125,
         195,
         142
+      ]
+    },
+    {
+      "name": "GraduationReservesReleased",
+      "discriminator": [
+        160,
+        134,
+        98,
+        0,
+        2,
+        24,
+        111,
+        58
       ]
     },
     {
@@ -2445,71 +2466,76 @@
     },
     {
       "code": 6016,
+      "name": "InvalidDuskMarket",
+      "msg": "Market account is not owned by the Dusk program"
+    },
+    {
+      "code": 6017,
       "name": "InvalidOmnipairParamsHash",
       "msg": "Invalid Omnipair params hash for pool configuration"
     },
     {
-      "code": 6017,
+      "code": 6018,
       "name": "InvalidLpUri",
       "msg": "LP metadata URI must start with http:// or https://"
     },
     {
-      "code": 6018,
+      "code": 6019,
       "name": "InvalidLpName",
       "msg": "LP name invalid or too long"
     },
     {
-      "code": 6019,
+      "code": 6020,
       "name": "InvalidLpSymbol",
       "msg": "LP symbol invalid or too long"
     },
     {
-      "code": 6020,
+      "code": 6021,
       "name": "OmnipairAccountCount",
       "msg": "Wrong number of Omnipair remaining accounts (expected 25)"
     },
     {
-      "code": 6021,
+      "code": 6022,
       "name": "OmnipairAccounts",
       "msg": "Omnipair account addresses do not match expected program IDs or PDAs"
     },
     {
-      "code": 6022,
+      "code": 6023,
       "name": "OmnipairTokenOrder",
       "msg": "Omnipair token0 must be lexicographically less than token1"
     },
     {
-      "code": 6023,
+      "code": 6024,
       "name": "OmnipairMintMismatch",
       "msg": "Omnipair pair must be project mint + wrapped SOL"
     },
     {
-      "code": 6024,
+      "code": 6025,
       "name": "OmnipairInvalidPair",
       "msg": "Omnipair pair PDA mismatch"
     },
     {
-      "code": 6025,
+      "code": 6026,
       "name": "OmnipairInvalidFutarchy",
       "msg": "Omnipair futarchy_authority PDA mismatch"
     },
     {
-      "code": 6026,
+      "code": 6027,
       "name": "OmnipairInvalidEventAuthority",
       "msg": "Omnipair event_authority PDA mismatch"
     },
     {
-      "code": 6027,
+      "code": 6028,
       "name": "OmnipairInvalidProgram",
       "msg": "Last remaining account must be the Omnipair program id"
     },
     {
-      "code": 6028,
+      "code": 6029,
       "name": "OmnipairDeployerAtas",
       "msg": "Deployer token accounts must match token0/token1 ATAs"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "BootstrapPoolTokenMismatch",
       "msg": "Computed Omnipair token deposit exceeds token_vault balance (inconsistent curve state)"
     }
@@ -2535,6 +2561,30 @@
           {
             "name": "creator_fee_recipient",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DuskMarketLinked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "deployer",
+            "type": "pubkey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2571,6 +2621,38 @@
           {
             "name": "mint",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "GraduationReservesReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deployer",
+            "type": "pubkey"
+          },
+          {
+            "name": "sol_amount",
+            "type": "u64"
+          },
+          {
+            "name": "token_amount",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_burned",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }

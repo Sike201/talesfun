@@ -1,14 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
 import type { Token, Trade } from "@/types";
-import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 import { cn, formatNumber } from "@/lib/utils";
 import TokenGraduatedActivity from "@/components/token/TokenGraduatedActivity";
-import { OmnipairLiquidityPanel } from "@/components/ui/TradingInterface";
+import TokenHoldersList from "@/components/token/TokenHoldersList";
+import { useMintHolders } from "@/hooks/useMintHolders";
 
-export type GraduatedFeedSection = "activity" | "liquidity";
+export type GraduatedFeedSection = "activity" | "holders";
 
 type Props = {
   token: Token;
@@ -17,8 +16,9 @@ type Props = {
   marketCapUsd: number;
   holderCount: number | null;
   holderLoading: boolean;
-  omnipairPoolSnapshot: OmnipairPoolSnapshot | null;
-  poolReady: boolean;
+  /** Kept for call-site compatibility; LP UI removed. */
+  omnipairPoolSnapshot?: unknown;
+  poolReady?: boolean;
   initialSection?: GraduatedFeedSection;
 };
 
@@ -29,12 +29,19 @@ export default function TokenGraduatedFeed({
   marketCapUsd,
   holderCount,
   holderLoading,
-  omnipairPoolSnapshot,
-  poolReady,
   initialSection = "activity",
 }: Props) {
-  const { connected } = useWallet();
-  const [section, setSection] = useState<GraduatedFeedSection>(initialSection);
+  const [section, setSection] = useState<GraduatedFeedSection>(
+    initialSection === "holders" ? "holders" : "activity"
+  );
+  const { holders, loading: holdersListLoading } = useMintHolders(
+    token.mint,
+    section === "holders" || holderCount == null,
+    token.gammPool ? [token.gammPool] : []
+  );
+
+  const displayCount =
+    holders.length > 0 ? holders.length : holderCount;
 
   return (
     <section className="token-feed">
@@ -50,21 +57,23 @@ export default function TokenGraduatedFeed({
           )}
         >
           Activity
-          <span className="ml-2 text-sm font-normal text-white/40">
-            {holderLoading ? "…" : `${formatNumber(holderCount ?? 0)} holders`}
-          </span>
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected={section === "liquidity"}
-          onClick={() => setSection("liquidity")}
+          aria-selected={section === "holders"}
+          onClick={() => setSection("holders")}
           className={cn(
             "token-feed-tab",
-            section === "liquidity" && "token-feed-tab-active"
+            section === "holders" && "token-feed-tab-active"
           )}
         >
-          Add LP
+          Holders
+          <span className="ml-2 text-sm font-normal text-white/40">
+            {holderLoading && holdersListLoading
+              ? "…"
+              : `${formatNumber(displayCount ?? 0)}`}
+          </span>
         </button>
       </div>
 
@@ -75,21 +84,15 @@ export default function TokenGraduatedFeed({
             trades={trades}
             solUsd={solUsd}
             marketCapUsd={marketCapUsd}
+            totalSupply={token.totalSupply}
           />
         ) : (
-          <div className="token-liquidity-panel">
-            {poolReady && omnipairPoolSnapshot ? (
-              <OmnipairLiquidityPanel
-                token={token}
-                connected={connected}
-                omnipairPoolSnapshot={omnipairPoolSnapshot}
-              />
-            ) : (
-              <p className="py-12 text-center text-sm text-white/45">
-                Omnipair pool must be live before you can add liquidity. Bootstrap or connect to a graduated pool first.
-              </p>
-            )}
-          </div>
+          <TokenHoldersList
+            holders={holders}
+            loading={holdersListLoading}
+            ticker={token.ticker}
+            totalSupply={token.totalSupply}
+          />
         )}
       </div>
     </section>

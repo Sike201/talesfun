@@ -41,3 +41,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 scripts/.bootstrap-deployer.json
+.data/
+.e2e-tmp/

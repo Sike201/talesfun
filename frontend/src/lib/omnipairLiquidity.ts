@@ -44,8 +44,18 @@ export async function sendOmnipairAddLiquidityTx(params: {
   solUi: number;
   slippagePercent: number;
 }): Promise<string> {
-  const { sendDuskAddLiquidityTx } = await import("./duskMarket");
-  return sendDuskAddLiquidityTx(params);
+  const duskProgramId = new PublicKey(
+    process.env.NEXT_PUBLIC_DUSK_PROGRAM_ID ||
+      "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
+  );
+  const duskDeployed = await params.connection.getAccountInfo(
+    duskProgramId,
+    "confirmed"
+  );
+  if (duskDeployed?.executable) {
+    const { sendDuskAddLiquidityTx } = await import("./duskMarket");
+    return sendDuskAddLiquidityTx(params);
+  }
 
   const { connection, wallet, snapshot, solUi } = params;
   const owner = wallet.publicKey;

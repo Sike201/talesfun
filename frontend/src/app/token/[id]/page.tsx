@@ -88,12 +88,25 @@ function tradesFromLocalHistory(mint: string): Trade[] {
   });
 }
 
+function tradeRowRichness(t: Trade): number {
+  let score = 0;
+  if (t.trader) score += 2;
+  if (t.solAmount > 0) score += 2;
+  if (t.tokenAmount > 0) score += 2;
+  if (t.price > 0) score += 1;
+  return score;
+}
+
 function mergeApiAndLocalTrades(apiRows: Trade[], mint: string): Trade[] {
   const local = tradesFromLocalHistory(mint);
   const bySig = new Map<string, Trade>();
-  for (const t of [...apiRows, ...local]) {
+  // Prefer the richer row for a signature (never let sparse local clobber API).
+  for (const t of [...local, ...apiRows]) {
     const key = t.txSignature || t.id;
-    bySig.set(key, t);
+    const prev = bySig.get(key);
+    if (!prev || tradeRowRichness(t) >= tradeRowRichness(prev)) {
+      bySig.set(key, t);
+    }
   }
   return [...bySig.values()].sort(
     (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
@@ -168,7 +181,9 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   const leverageParam = searchParams.get("leverage");
   const feedSectionParam = searchParams.get("section");
   const feedInitialSection =
-    feedSectionParam === "liquidity" ? ("liquidity" as const) : undefined;
+    feedSectionParam === "holders" || feedSectionParam === "liquidity"
+      ? ("holders" as const)
+      : undefined;
   const tradingInitialMode =
     leverageParam === "long" || leverageParam === "short" ? ("leverage" as const) : undefined;
   const tradingLeverageDir =
@@ -258,6 +273,13 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           );
         }
 
+        // Paint from chain immediately — don't block UI on Supabase / volume.
+        const early = tokenStateToToken(stateRes, canonicalMint);
+        if (!cancelled) {
+          setToken(early);
+          setTrades(mergeApiAndLocalTrades([], canonicalMint));
+        }
+
         const [sbRes, tradesRes, volRes, solUsdJson] = await Promise.all([
           timed(
             "supabase_token_row",
@@ -280,7 +302,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           timed(
             "supabase_trades",
             fetch(
-              `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=5000`
+              `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=200`
             ).then(async r => {
               const j = await r.json();
               return { ok: r.ok, status: r.status, body: j };

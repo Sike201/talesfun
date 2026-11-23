@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import Image from "next/image";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
@@ -11,8 +12,29 @@ import toast from "react-hot-toast";
 import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
 import { sendOmnipairAddLiquidityTx } from "@/lib/omnipairLiquidity";
+import {
+  sendOmnipairBorrowAgainstProjectTx,
+  sendOmnipairLeverageStepTx,
+} from "@/lib/omnipairLending";
 import { useWalletBalances } from "@/hooks/useWalletBalances";
 import { persistLaunchpadTrade } from "@/lib/persistLaunchpadTrade";
+import { useSolUsd } from "@/hooks/useSolUsd";
+
+type Mode = "swap" | "leverage" | "borrow";
+
+/** Tiny Omnipair brand mark (beta.omnipair.fi) — same for all tabs to avoid vibecode crop icons. */
+function OmnipairTabIcon() {
+  return (
+    <Image
+      src="/icons/omnipair/mark-small-dark.svg"
+      alt=""
+      width={12}
+      height={12}
+      className="h-3 w-3 shrink-0 opacity-80"
+      unoptimized
+    />
+  );
+}
 
 function isLikelyBenignWalletOrRpcNoise(e: unknown): boolean {
   const m = (e instanceof Error ? e.message : String(e)).toLowerCase();
@@ -21,8 +43,6 @@ function isLikelyBenignWalletOrRpcNoise(e: unknown): boolean {
     (m.includes("websocket") && m.includes("undefined"))
   );
 }
-
-type Mode = "swap" | "leverage" | "borrow" | "liquidity";
 
 /** Omnipair-style Long/Short or Buy/Sell pair */
 function TalesSegmentToggle<T extends string>({
@@ -39,21 +59,21 @@ function TalesSegmentToggle<T extends string>({
   tone?: "neutral" | "signed";
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.06]">
       {options.map((opt, i) => {
         const active = value === opt.id;
         const signed =
           tone === "signed"
             ? i === 0
               ? active
-                ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-300"
-                : "border-white/[0.08] text-white/40 hover:border-white/15"
+                ? "bg-emerald-500/15 text-emerald-300"
+                : "bg-[#0c0c0c] text-white/40 hover:text-white/60"
               : active
-                ? "border-red-400/50 bg-red-500/10 text-red-300"
-                : "border-white/[0.08] text-white/40 hover:border-white/15"
+                ? "bg-red-500/15 text-red-300"
+                : "bg-[#0c0c0c] text-white/40 hover:text-white/60"
             : active
-              ? "border-white/20 bg-white/[0.08] text-white"
-              : "border-white/[0.08] text-white/40 hover:border-white/15";
+              ? "bg-white/[0.08] text-white"
+              : "bg-[#0c0c0c] text-white/40 hover:text-white/60";
         return (
           <button
             key={opt.id}
@@ -61,7 +81,7 @@ function TalesSegmentToggle<T extends string>({
             disabled={disabled}
             onClick={() => onChange(opt.id)}
             className={cn(
-              "rounded-xl border px-2 py-3 text-sm font-semibold transition-colors disabled:opacity-50",
+              "px-2 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50",
               signed
             )}
           >
@@ -85,13 +105,13 @@ function TalesTradeField({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-black/35 px-3.5 py-3.5">
+    <div className="border-b border-white/[0.06] px-0.5 py-3">
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium text-white/45">{label}</span>
+        <span className="text-[11px] font-medium text-white/40">{label}</span>
         <div className="flex items-center gap-2">
           {headerRight}
           {suffix ? (
-            <span className="max-w-[80px] truncate text-[11px] font-semibold text-white/50">
+            <span className="max-w-[90px] truncate text-[11px] font-medium text-white/55">
               {suffix}
             </span>
           ) : null}
@@ -195,6 +215,9 @@ function SlippageButton({
   );
 }
 
+/** Cap at ~1/(1−0.85)≈6.67x protocol max; thin pools rarely clear above ~3–4x. */
+const MAX_LEVERAGE_UI = 5;
+
 /* ── Leverage slider ───────────────────────────────────────────────── */
 function LeverageSlider({
   value,
@@ -203,35 +226,35 @@ function LeverageSlider({
   value: number;
   onChange: (v: number) => void;
 }) {
-  const pct = ((value - 1) / 9) * 100;
+  const pct = ((value - 1) / (MAX_LEVERAGE_UI - 1)) * 100;
   return (
-    <div className="rounded-xl bg-white/[0.035] px-3.5 py-3">
+    <div className="px-0.5 py-1">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[11px] font-medium text-white/45">Leverage</span>
-        <span className="text-sm font-bold tabular-nums text-white">{value}x</span>
+        <span className="text-sm font-semibold tabular-nums text-white">{value}x</span>
       </div>
       <input
         type="range"
         min={1}
-        max={10}
+        max={MAX_LEVERAGE_UI}
         step={1}
         value={value}
         onChange={e => onChange(parseInt(e.target.value))}
-        className="h-1.5 w-full cursor-pointer appearance-none rounded-full"
+        className="h-1 w-full cursor-pointer appearance-none rounded-full bg-white/10"
         style={{
-          background: `linear-gradient(to right, rgba(200,230,255,0.7) 0%, rgba(200,230,255,0.7) ${pct}%, rgba(255,255,255,0.12) ${pct}%, rgba(255,255,255,0.12) 100%)`,
-          accentColor: "#a1a1aa",
+          background: `linear-gradient(to right, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.55) ${pct}%, rgba(255,255,255,0.1) ${pct}%, rgba(255,255,255,0.1) 100%)`,
+          accentColor: "#e4e4e7",
         }}
       />
-      <div className="mt-2 flex justify-between text-[10px] text-white/35">
-        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(l => (
+      <div className="mt-1.5 flex justify-between text-[10px] text-white/30">
+        {Array.from({ length: MAX_LEVERAGE_UI }, (_, i) => i + 1).map(l => (
           <button
             key={l}
             type="button"
             onClick={() => onChange(l)}
             className={cn(
               "transition-colors",
-              value === l ? "font-semibold text-white" : "hover:text-white/60"
+              value === l ? "font-semibold text-white/80" : "hover:text-white/50"
             )}
           >
             {l}x
@@ -261,27 +284,27 @@ export default function TradingInterface({
     omnipairPoolSnapshot.spotPriceSol > 0;
 
   const tabs: { id: Mode; label: string }[] = [
+    { id: "swap", label: "Swap" },
     { id: "leverage", label: "Leverage" },
     { id: "borrow", label: "Borrow" },
-    { id: "swap", label: "Swap" },
-    { id: "liquidity", label: "Earn" },
   ];
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#111111]">
-      <div className="flex gap-1 overflow-x-auto border-b border-white/[0.06] px-2 pt-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0c0c0c]">
+      <div className="flex border-b border-white/[0.06]">
         {tabs.map(t => (
           <button
             key={t.id}
             type="button"
             onClick={() => setMode(t.id)}
             className={cn(
-              "shrink-0 rounded-t-lg px-3.5 py-2.5 text-[12px] font-semibold transition-colors",
+              "inline-flex flex-1 items-center justify-center gap-1.5 px-3 py-3 text-[12px] font-medium tracking-wide transition-colors",
               mode === t.id
-                ? "bg-white/[0.08] text-white"
-                : "text-white/40 hover:text-white/70"
+                ? "border-b border-white/80 text-white"
+                : "text-white/40 hover:text-white/65"
             )}
           >
+            <OmnipairTabIcon />
             {t.label}
           </button>
         ))}
@@ -301,13 +324,11 @@ export default function TradingInterface({
             token={token}
             connected={connected}
             initialDirection={initialLeverageDirection}
+            omnipairPoolSnapshot={omnipairSwapReady ? omnipairPoolSnapshot! : null}
           />
         ) : null}
         {mode === "borrow" ? (
-          <BorrowPanel token={token} connected={connected} />
-        ) : null}
-        {mode === "liquidity" ? (
-          <OmnipairLiquidityPanel
+          <BorrowPanel
             token={token}
             connected={connected}
             omnipairPoolSnapshot={omnipairSwapReady ? omnipairPoolSnapshot! : null}
@@ -434,7 +455,7 @@ function SwapPanel({
   } = useWalletBalances(token.mint);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
-  const [slippage, setSlippage] = useState("5");
+  const [slippage, setSlippage] = useState("8");
   const [loading, setLoading] = useState(false);
 
   const priceSol =
@@ -717,41 +738,118 @@ function LeveragePanel({
   token,
   connected,
   initialDirection,
+  omnipairPoolSnapshot,
 }: {
   token: Token;
   connected: boolean;
   initialDirection?: "long" | "short";
+  omnipairPoolSnapshot: OmnipairPoolSnapshot | null;
 }) {
+  const { connection } = useConnection();
+  const walletAdapter = useWallet();
+  const { solUsd } = useSolUsd();
   const [direction, setDirection] = useState<"long" | "short">(
     initialDirection ?? "long"
   );
   const [size, setSize] = useState("");
-  const [leverage, setLeverage] = useState(1);
+  const [leverage, setLeverage] = useState(2);
   const [loading, setLoading] = useState(false);
+  const { solBalanceLamports, tokenBalanceDisplay } = useWalletBalances(
+    connected ? token.mint : undefined
+  );
 
   const sizeNum = parseFloat(size) || 0;
+  const spot =
+    omnipairPoolSnapshot?.spotPriceSol && omnipairPoolSnapshot.spotPriceSol > 0
+      ? omnipairPoolSnapshot.spotPriceSol
+      : token.currentPrice;
+  const usd = solUsd ?? 140;
+  const currentPriceUSD = spot * usd;
   const positionSize = sizeNum * leverage;
-  const currentPriceUSD = token.currentPrice * 140;
+  // Thin-pool impact-aware CF (~22%); protocol hard-cap 85% → max lev ≈ 1/(1−CF).
+  const thinCf = 0.22;
+  const maxLevFromCf = Math.min(MAX_LEVERAGE_UI, 1 / (1 - thinCf));
   const liqPrice =
     direction === "long"
       ? currentPriceUSD * (1 - 1 / Math.max(leverage, 1.1) + 0.05)
       : currentPriceUSD * (1 + 1 / Math.max(leverage, 1.1) - 0.05);
 
+  const reserveSol = omnipairPoolSnapshot
+    ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
+    : 0;
+  // Cap margin so borrow stays within ~12% of pool SOL depth (impact-aware CF).
+  const maxShortMarginSol = Math.max(0.001, reserveSol * 0.12);
+  const walletSol = solBalanceLamports / 1e9;
+  const walletTokens = parseFloat(tokenBalanceDisplay) || 0;
+  const maxLongMarginTokens =
+    walletTokens > 0 ? walletTokens * 0.5 : Number.POSITIVE_INFINITY;
+  const maxMargin =
+    direction === "short"
+      ? Math.min(maxShortMarginSol, Math.max(0, walletSol - 0.02))
+      : maxLongMarginTokens;
+
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
 
   const handleOpen = async () => {
-    if (!connected || !size) return;
+    if (!connected || !size || !omnipairPoolSnapshot) {
+      toast.error("Connect wallet and wait for the Omnipair pool");
+      return;
+    }
+    let margin = parseFloat(size);
+    if (!(margin > 0)) {
+      toast.error("Enter margin size");
+      return;
+    }
+    if (Number.isFinite(maxMargin) && margin > maxMargin) {
+      toast.error(
+        `Max margin for this pool is ${maxMargin.toPrecision(4)} ${
+          direction === "short" ? "SOL" : displayTicker
+        }`
+      );
+      return;
+    }
+    if (leverage > maxLevFromCf + 0.01) {
+      toast.error(
+        `Max practical leverage on thin pools is ~${maxLevFromCf.toFixed(1)}x (impact-aware CF)`
+      );
+      return;
+    }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 400));
-    toast.error(
-      `Long/short txs are next — Omnipair pool is live for swap. See Docs → Leveraging.`
-    );
-    setLoading(false);
+    try {
+      const wallet = {
+        publicKey: walletAdapter.publicKey!,
+        signTransaction: walletAdapter.signTransaction!.bind(walletAdapter),
+        signAllTransactions: walletAdapter.signAllTransactions!.bind(walletAdapter),
+      } as AnchorWallet;
+      const { sigs } = await sendOmnipairLeverageStepTx({
+        connection,
+        wallet,
+        snapshot: omnipairPoolSnapshot,
+        direction,
+        marginUi: margin,
+        leverage: Math.min(leverage, MAX_LEVERAGE_UI),
+        slippagePercent: 8,
+      });
+      toast.success(
+        `${direction === "long" ? "Long" : "Short"} submitted (${sigs.length} txs)`
+      );
+      window.dispatchEvent(
+        new CustomEvent("higher:trade-complete", {
+          detail: { mint: token.mint, source: "omnipair-leverage" },
+        })
+      );
+    } catch (e) {
+      if (!isLikelyBenignWalletOrRpcNoise(e)) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-1">
       <TalesSegmentToggle
         tone="signed"
         options={[
@@ -762,25 +860,30 @@ function LeveragePanel({
         onChange={setDirection}
       />
 
-      <div className="flex items-center justify-between px-0.5">
-        <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold text-white/50">
+      <div className="flex items-center justify-between px-0.5 pt-2">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-white/35">
           Isolated
         </span>
-        <span className="text-[10px] font-medium text-white/45">{leverage}x leverage</span>
+        <span className="text-[10px] text-white/40">
+          Max ~{maxLevFromCf.toFixed(1)}x · CF impact-aware
+        </span>
       </div>
 
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
-        <TalesTradeDetailsRow
-          label="Available to trade"
-          value={`0.00 ${direction === "long" ? "SOL" : displayTicker}`}
-        />
-        <TalesTradeDetailsRow
-          label="Current position"
-          value={`0.00 ${displayTicker}`}
-        />
-      </div>
-
-      <TalesTradeField label="Size" suffix={displayTicker}>
+      <TalesTradeField
+        label={direction === "long" ? "Margin (token)" : "Margin (SOL)"}
+        suffix={direction === "long" ? displayTicker : "SOL"}
+        headerRight={
+          Number.isFinite(maxMargin) && maxMargin > 0 ? (
+            <button
+              type="button"
+              className="text-[10px] font-semibold text-white/50 hover:text-white"
+              onClick={() => setSize(String(Number(maxMargin.toPrecision(6))))}
+            >
+              Max
+            </button>
+          ) : null
+        }
+      >
         <input
           type="number"
           value={size}
@@ -790,46 +893,66 @@ function LeveragePanel({
         />
       </TalesTradeField>
 
-      <LeverageSlider value={leverage} onChange={setLeverage} />
+      <LeverageSlider
+        value={Math.min(leverage, MAX_LEVERAGE_UI)}
+        onChange={v => setLeverage(Math.min(v, MAX_LEVERAGE_UI))}
+      />
 
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+      <div className="space-y-0 px-0.5 py-1">
         <TalesTradeDetailsRow
-          label="Liquidation price"
-          value={sizeNum > 0 ? `$${liqPrice.toFixed(6)}` : "N/A"}
+          label="Spot"
+          value={spot > 0 ? `${spot.toExponential(3)} SOL` : "—"}
         />
         <TalesTradeDetailsRow
-          label="Order value"
-          value={sizeNum > 0 ? formatUSD(positionSize * currentPriceUSD) : "N/A"}
+          label="Est. liquidation"
+          value={sizeNum > 0 ? `$${liqPrice.toFixed(6)}` : "—"}
         />
-        <TalesTradeDetailsRow label="Slippage (max)" value="8.00%" />
+        <TalesTradeDetailsRow
+          label="Notional"
+          value={
+            sizeNum > 0
+              ? formatUSD(
+                  direction === "long"
+                    ? positionSize * currentPriceUSD
+                    : positionSize * usd
+                )
+              : "—"
+          }
+        />
+        <TalesTradeDetailsRow
+          label="Pool depth"
+          value={reserveSol > 0 ? `${reserveSol.toFixed(3)} SOL` : "—"}
+        />
       </div>
 
-      {leverage >= 5 && (
-        <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2.5">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-300" />
-          <p className="text-[10px] leading-relaxed text-amber-100/90">
-            High leverage. Liquidation at about {(100 / leverage).toFixed(0)}% adverse move.
+      {leverage >= 4 && (
+        <div className="flex gap-2 px-0.5 py-1">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-300/80" />
+          <p className="text-[10px] leading-relaxed text-white/40">
+            High leverage on thin pools often hits BorrowingPowerExceeded — keep margin small.
           </p>
         </div>
       )}
 
-      <p className="text-[10px] leading-relaxed text-white/35">
-        Long/short txs coming next — spot swap works now on Omnipair.
-      </p>
+      {!omnipairPoolSnapshot ? (
+        <p className="px-0.5 text-[10px] text-amber-200/70">Waiting for Omnipair pool…</p>
+      ) : null}
 
       {connected ? (
         <button
           type="button"
           onClick={handleOpen}
-          disabled={loading || !size}
+          disabled={loading || !size || !omnipairPoolSnapshot}
           className={cn(
-            "w-full rounded-full py-3.5 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
+            "mt-2 w-full rounded-lg py-3.5 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
             direction === "long"
               ? "bg-emerald-500 text-[#04140a] hover:brightness-105"
               : "bg-red-500 text-white hover:brightness-105"
           )}
         >
-          {loading ? "Opening…" : `${direction === "long" ? "Long" : "Short"} ${token.ticker}`}
+          {loading
+            ? "Submitting…"
+            : `${direction === "long" ? "Long" : "Short"} ${token.ticker}`}
         </button>
       ) : (
         <WalletMultiButton />
@@ -840,29 +963,80 @@ function LeveragePanel({
 
 /* ─── Borrow ─────────────────────────────────────────────────────── */
 
-function BorrowPanel({ token, connected }: { token: Token; connected: boolean }) {
+function BorrowPanel({
+  token,
+  connected,
+  omnipairPoolSnapshot,
+}: {
+  token: Token;
+  connected: boolean;
+  omnipairPoolSnapshot: OmnipairPoolSnapshot | null;
+}) {
+  const { connection } = useConnection();
+  const walletAdapter = useWallet();
+  const { solUsd } = useSolUsd();
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
 
   const num = parseFloat(amount) || 0;
-  const maxBorrow = num * 0.65;
-  const priceUSD = token.currentPrice * 140;
+  const spot =
+    omnipairPoolSnapshot?.spotPriceSol && omnipairPoolSnapshot.spotPriceSol > 0
+      ? omnipairPoolSnapshot.spotPriceSol
+      : token.currentPrice;
+  const usd = solUsd ?? 140;
+  // Docs: borrow limit ≈ coll × impact-aware CF × 0.95; thin pools often ≪ 85%.
+  // Match thin-pool impact-aware CF used in sendOmnipairBorrowAgainstProjectTx / leverage.
+  const maxBorrowSol = num * spot * 0.22;
+  const priceUSD = spot * usd;
 
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
 
   const handleBorrow = async () => {
-    if (!connected || !amount) return;
+    if (!connected || !amount || !omnipairPoolSnapshot) {
+      toast.error("Connect wallet and wait for the Omnipair pool");
+      return;
+    }
+    const coll = parseFloat(amount);
+    if (!(coll > 0)) {
+      toast.error("Enter collateral amount");
+      return;
+    }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 400));
-    toast.error(
-      `Borrow txs are next — post collateral via Omnipair once wired. See Docs → Borrowing.`
-    );
-    setLoading(false);
+    try {
+      const wallet = {
+        publicKey: walletAdapter.publicKey!,
+        signTransaction: walletAdapter.signTransaction!.bind(walletAdapter),
+        signAllTransactions: walletAdapter.signAllTransactions!.bind(walletAdapter),
+      } as AnchorWallet;
+      const { collateralSig, borrowSig } = await sendOmnipairBorrowAgainstProjectTx({
+        connection,
+        wallet,
+        snapshot: omnipairPoolSnapshot,
+        collateralTokenUi: coll,
+      });
+      toast.success(`Borrowed SOL — collateral ${collateralSig.slice(0, 8)}…`);
+      console.info("[borrow]", { collateralSig, borrowSig });
+      window.dispatchEvent(
+        new CustomEvent("higher:trade-complete", {
+          detail: { mint: token.mint, source: "omnipair-borrow" },
+        })
+      );
+    } catch (e) {
+      if (!isLikelyBenignWalletOrRpcNoise(e)) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="space-y-3">
+      <div className="flex items-center gap-2 text-[10px] text-white/45">
+        <OmnipairTabIcon alt="Omnipair" />
+        Isolated borrow — post {displayTicker}, receive SOL (docs.omnipair.fi)
+      </div>
       <TalesTradeField label="Collateral" suffix={displayTicker}>
         <input
           type="number"
@@ -873,9 +1047,9 @@ function BorrowPanel({ token, connected }: { token: Token; connected: boolean })
         />
       </TalesTradeField>
 
-      <TalesTradeField label="Receive" suffix="SOL">
+      <TalesTradeField label="You borrow" suffix="SOL">
         <span className="text-2xl font-semibold tracking-tight text-white">
-          {num > 0 ? ((maxBorrow * priceUSD) / 140).toFixed(4) : "0"}
+          {num > 0 ? maxBorrowSol.toFixed(4) : "0"}
         </span>
       </TalesTradeField>
 
@@ -886,25 +1060,31 @@ function BorrowPanel({ token, connected }: { token: Token; connected: boolean })
         />
         <TalesTradeDetailsRow
           label="Available to borrow"
-          value={num > 0 ? formatUSD(maxBorrow * priceUSD) : "—"}
+          value={num > 0 ? `${maxBorrowSol.toFixed(4)} SOL` : "—"}
         />
-        <TalesTradeDetailsRow label="Interest rate" value="6.5% APR" />
-        <TalesTradeDetailsRow label="Max LTV" value="65%" />
-        <TalesTradeDetailsRow label="Liquidation at" value="−40% from entry" />
+        <TalesTradeDetailsRow label="Preview LTV" value="~22% (thin-pool safe)" />
+        <TalesTradeDetailsRow label="Protocol max CF" value="85% impact-aware" />
+        <TalesTradeDetailsRow label="Market" value="Isolated pair" />
       </div>
 
-      <p className="text-[10px] leading-relaxed text-white/35">
-        Borrow submits via Omnipair next — UI is ready.
-      </p>
+      {!omnipairPoolSnapshot ? (
+        <p className="text-[10px] leading-relaxed text-amber-200/80">
+          Waiting for Omnipair pool snapshot…
+        </p>
+      ) : (
+        <p className="text-[10px] leading-relaxed text-white/35">
+          Submits on-chain add_collateral then borrow against this market&apos;s reserves.
+        </p>
+      )}
 
       {connected ? (
         <button
           type="button"
           onClick={handleBorrow}
-          disabled={loading || !amount}
+          disabled={loading || !amount || !omnipairPoolSnapshot}
           className="w-full rounded-full bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
         >
-          {loading ? "Processing…" : "Borrow SOL"}
+          {loading ? "Borrowing…" : "Borrow SOL"}
         </button>
       ) : (
         <WalletMultiButton />

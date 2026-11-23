@@ -11,7 +11,7 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { BN } from "@coral-xyz/anchor";
-import { Token, CREATOR_FEE_BPS } from "@/types";
+import { Token, TOTAL_FEE_BPS } from "@/types";
 import { cn, priceSolFromRaw } from "@/lib/utils";
 import { useProgram } from "@/hooks/useProgram";
 import { useWalletBalances } from "@/hooks/useWalletBalances";
@@ -607,10 +607,10 @@ export default function TradePanel({ token }: Props) {
             { icon: "ℹ️" }
           );
         }
-        const creatorFee = solLamports
-          .mul(new BN(CREATOR_FEE_BPS))
+        const curveFee = solLamports
+          .mul(new BN(TOTAL_FEE_BPS))
           .div(new BN(10_000));
-        const netSol = solLamports.sub(creatorFee);
+        const netSol = solLamports.sub(curveFee);
 
         const expectedTokensOut = calculateTokensOut(
           virtualSolReserve,
@@ -623,7 +623,7 @@ export default function TradePanel({ token }: Props) {
         console.log("[higher.run] buy quote (CP + inventory cap):", {
           solLamportsDesired: solLamportsDesired.toString(),
           solLamportsEffective: solLamports.toString(),
-          creatorFee: creatorFee.toString(),
+          curveFee: curveFee.toString(),
           netSol: netSol.toString(),
           expectedTokensOut: expectedTokensOut.toString(),
           outCapped: outCapped.toString(),

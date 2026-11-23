@@ -96,9 +96,12 @@ export default function TokenGraduatedInfo({
           </div>
         ) : null}
 
-        {showCreatorFees && typeof creatorFeesSol === "number" ? (
+        {/* Creator fees removed from the product. Legacy claimable balances only. */}
+        {showCreatorFees &&
+        typeof creatorFeesSol === "number" &&
+        creatorFeesSol > 0 ? (
           <div className="token-info-row">
-            <dt>Creator fees</dt>
+            <dt>Legacy creator fees</dt>
             <dd className="text-sm tabular-nums text-white/75">
               {creatorFeesSol.toFixed(4)} SOL claimable
             </dd>

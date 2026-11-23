@@ -20,6 +20,10 @@ export async function persistLaunchpadTrade(payload: LaunchpadTradePayload): Pro
     timestamp: payload.timestamp,
     signature: payload.signature,
     side: payload.side,
+    sol_amount_raw: payload.sol_amount_raw,
+    token_amount_raw: payload.token_amount_raw,
+    wallet: payload.wallet,
+    price_sol: payload.price_sol,
   });
   try {
     console.log(

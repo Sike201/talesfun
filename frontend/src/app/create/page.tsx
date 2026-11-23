@@ -195,7 +195,7 @@ export default function CreatePage() {
   };
 
   const launchFeeLabel = solVaultRentSol ?? "0.0009";
-  const economicsLine = `Launch fee ~${launchFeeLabel} SOL. Graduates at ${GRADUATION_SOL} SOL. Curve fee 1.0%.`;
+  const economicsLine = `Launch fee ~${launchFeeLabel} SOL. Graduates at ${GRADUATION_SOL} SOL. Curve fee 1.0%. Omnipair swap fee 0.30%.`;
 
   const handleLaunch = async () => {
     if (isLaunching) return;
@@ -622,12 +622,12 @@ export default function CreatePage() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <label className={labelClass}>Creator fee</label>
+                <label className={labelClass}>Curve fee</label>
                 <div className="flex h-[42px] items-center rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 text-[14px] tabular-nums text-white/80">
                   1.0%
                 </div>
                 <p className="mt-1.5 text-[11px] leading-relaxed text-white/35">
-                  Accrues to your fee wallet. Claim on the token page.
+                  Stays in the bonding curve as liquidity. No creator cut.
                 </p>
               </div>
               <div>
@@ -650,20 +650,6 @@ export default function CreatePage() {
                   Optional. Buy first from the token page after launch.
                 </p>
               </div>
-            </div>
-
-            <div>
-              <label className={labelClass}>Creator fee wallet</label>
-              <input
-                type="text"
-                value={form.creatorFeeRecipient}
-                onChange={e => set("creatorFeeRecipient", e.target.value)}
-                placeholder={publicKey?.toBase58() || "Defaults to your wallet"}
-                className={cn(fieldClass, "font-mono text-[13px]")}
-              />
-              <p className="mt-1.5 text-[11px] text-white/35">
-                Defaults to your connected wallet.
-              </p>
             </div>
 
             <p className="text-[12px] leading-relaxed text-white/40">
@@ -722,7 +708,9 @@ export default function CreatePage() {
             description={form.description}
             imagePreview={form.imagePreview}
             launchFeeSol={solVaultRentSol}
-            creatorFeePct={1}
+            creatorFeePct={0}
+            curveFeePct={1}
+            swapFeePct={0.3}
           />
         </div>
       </div>

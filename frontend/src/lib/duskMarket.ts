@@ -5,7 +5,15 @@
  * this module opens a Dusk market with the SDK, seeds it, then links the address.
  */
 import { AnchorProvider, BN } from "@coral-xyz/anchor";
-import { NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction } from "@solana/spl-token";
+import {
+  NATIVE_MINT,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createSyncNativeInstruction,
+  createTransferCheckedWithTransferHookInstruction,
+} from "@solana/spl-token";
 import {
   Connection,
   Keypair,
@@ -35,6 +43,16 @@ import {
   getTokenStatePDA,
 } from "./program";
 import type { OmnipairPoolSnapshot } from "./omnipairPoolState";
+import { OMNIPAIR_SWAP_FEE_BPS } from "@/types";
+
+/**
+ * Solana incinerator — dead address used to permanently lock srLP.
+ * We transfer claimable bootstrap srLP here instead of calling Omnipair
+ * remove_liquidity / withdraw, which would pull liquidity out of the market.
+ */
+export const SRLP_INCINERATOR = new PublicKey(
+  "1nc1nerator11111111111111111111111111111111"
+);
 
 export const DUSK_PROGRAM_ID_STR =
   process.env.NEXT_PUBLIC_DUSK_PROGRAM_ID ||
@@ -406,8 +424,80 @@ async function waitForLookupTable(connection: Connection, address: PublicKey) {
 }
 
 /**
+ * Permanently lock claimable bootstrap srLP by transferring it to the incinerator.
+ *
+ * Why transfer instead of Omnipair remove_liquidity / withdraw?
+ * - remove_liquidity would redeem srLP for the underlying reserves and drain the market.
+ * - Transferring to a dead address keeps the reserves in the pool forever (standard AMM lock).
+ * - Omnipair's own permanent junior seed is already protocol-locked; we only burn the
+ *   claimable srLP the platform received for seeding.
+ */
+async function lockBootstrapSrlpAtIncinerator(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  srlpMint: PublicKey;
+  ownerSrlp: PublicKey;
+}): Promise<string | null> {
+  const { connection, wallet, srlpMint, ownerSrlp } = params;
+  const bal = await connection.getTokenAccountBalance(ownerSrlp, "confirmed").catch(() => null);
+  const raw = bal?.value.amount ?? "0";
+  if (raw === "0") {
+    console.info("[dusk] no claimable srLP to lock");
+    return null;
+  }
+  const amount = BigInt(raw);
+  const decimals = bal?.value.decimals ?? 9;
+  const incineratorAta = getAssociatedTokenAddressSync(
+    srlpMint,
+    SRLP_INCINERATOR,
+    true,
+    TOKEN_2022_PROGRAM_ID
+  );
+
+  const setup: TransactionInstruction[] = [];
+  if (!(await connection.getAccountInfo(incineratorAta, "confirmed"))) {
+    setup.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        wallet.publicKey,
+        incineratorAta,
+        SRLP_INCINERATOR,
+        srlpMint,
+        TOKEN_2022_PROGRAM_ID
+      )
+    );
+  }
+
+  // Token-2022 transfer-hook aware: resolves ExtraAccountMetaList for hooked srLP.
+  const transferIx = await createTransferCheckedWithTransferHookInstruction(
+    connection,
+    ownerSrlp,
+    srlpMint,
+    incineratorAta,
+    wallet.publicKey,
+    amount,
+    decimals,
+    [],
+    "confirmed",
+    TOKEN_2022_PROGRAM_ID
+  );
+
+  const sig = await sendLegacy(connection, wallet, [...setup, transferIx]);
+  console.info("[dusk] locked bootstrap srLP at incinerator", {
+    srlpMint: srlpMint.toBase58(),
+    amount: raw,
+    incinerator: SRLP_INCINERATOR.toBase58(),
+    signature: sig,
+  });
+  return sig;
+}
+
+/**
  * Release bonding-curve reserves, open a Dusk market (base = token, quote = SOL),
- * seed it, and store the market address on the launchpad.
+ * seed it, lock claimable srLP at the incinerator, and store the market on the launchpad.
+ *
+ * Operator: Dusk binds the initializeMarket `payer` as market operator. Bootstrap must
+ * therefore be signed by the platform authority (keeper = NEXT_PUBLIC_PLATFORM_AUTHORITY)
+ * so the platform — not a random creator wallet — is the operator.
  */
 export async function graduateToDuskMarket(params: {
   connection: Connection;
@@ -422,6 +512,15 @@ export async function graduateToDuskMarket(params: {
   const dusk = duskFor(connection, wallet);
   const programId = new PublicKey(DUSK_PROGRAM_ID_STR);
 
+  const platformAuthority = process.env.NEXT_PUBLIC_PLATFORM_AUTHORITY?.trim();
+  if (platformAuthority && owner.toBase58() !== platformAuthority) {
+    console.warn(
+      "[dusk] graduating wallet is not NEXT_PUBLIC_PLATFORM_AUTHORITY — " +
+        "market operator will be the payer, not the platform",
+      { payer: owner.toBase58(), platformAuthority }
+    );
+  }
+
   await releaseReserves(connection, wallet, mint);
 
   const read = getReadOnlyProgram(connection);
@@ -430,7 +529,8 @@ export async function graduateToDuskMarket(params: {
   const virtualSol = BigInt(state.virtualSolReserve.toString());
   const virtualToken = BigInt(state.virtualTokenReserve.toString());
   const priceNad = terminalPriceNad(virtualSol, virtualToken, TOKEN_DECIMALS);
-  const config = defaultMarketLaunchConfig();
+  // Base swap fee 30 bps (0.30%) on the graduated Omnipair / Dusk market.
+  const config = defaultMarketLaunchConfig({ swapFeeBps: OMNIPAIR_SWAP_FEE_BPS });
   const paramsHash = await dusk.write.marketParamsHashFor({
     payer: owner,
     config,
@@ -577,6 +677,31 @@ export async function graduateToDuskMarket(params: {
       }
     );
     lastSig = await sendLegacy(connection, wallet, seedTx.instructions);
+
+    // Lock 100% of claimable bootstrap srLP forever (do NOT remove_liquidity).
+    const burnSig = await lockBootstrapSrlpAtIncinerator({
+      connection,
+      wallet,
+      srlpMint,
+      ownerSrlp,
+    });
+    if (burnSig) lastSig = burnSig;
+  } else {
+    // Market already seeded earlier — still ensure platform holds no claimable srLP.
+    const srlpMint = asPubkey(marketAccount.srlpMint);
+    const ownerSrlp = getAssociatedTokenAddressSync(
+      srlpMint,
+      owner,
+      false,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const burnSig = await lockBootstrapSrlpAtIncinerator({
+      connection,
+      wallet,
+      srlpMint,
+      ownerSrlp,
+    });
+    if (burnSig) lastSig = burnSig;
   }
 
   const linked = state.gammPool as PublicKey;

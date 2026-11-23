@@ -4,7 +4,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import { sendBootstrapOmnipairPoolTx } from "../src/lib/omnipairBootstrap";
 import {
   getReadOnlyProgram,
@@ -12,37 +18,54 @@ import {
   tokenStateToToken,
 } from "../src/lib/program";
 
+function signWithKeeper<T extends Transaction | VersionedTransaction>(
+  tx: T,
+  kp: Keypair
+): T {
+  if (tx instanceof VersionedTransaction) {
+    tx.sign([kp]);
+    return tx;
+  }
+  tx.partialSign(kp);
+  return tx;
+}
+
 async function main() {
   const mintStr = process.argv[2];
   if (!mintStr) throw new Error("Usage: … <mint>");
   const mint = new PublicKey(mintStr);
-  const secret = JSON.parse(
-    fs.readFileSync(
-      path.join(process.env.HOME!, ".config/solana/id.json"),
-      "utf8"
-    )
-  );
+
+  // Prefer platform keeper so Dusk market operator = platform authority.
+  const keeperJson = process.env.OMNIPAIR_BOOTSTRAP_KEEPER_KEYPAIR_JSON?.trim();
+  const secret = keeperJson
+    ? (JSON.parse(keeperJson) as number[])
+    : (JSON.parse(
+        fs.readFileSync(
+          path.join(process.env.HOME!, ".config/solana/id.json"),
+          "utf8"
+        )
+      ) as number[]);
   const kp = Keypair.fromSecretKey(Uint8Array.from(secret));
+  const platform = process.env.NEXT_PUBLIC_PLATFORM_AUTHORITY?.trim();
+  if (platform && kp.publicKey.toBase58() !== platform) {
+    console.warn(
+      "[bootstrap] signer is not NEXT_PUBLIC_PLATFORM_AUTHORITY — operator will not be platform",
+      { signer: kp.publicKey.toBase58(), platform }
+    );
+  }
+
   const connection = new Connection(
     process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.devnet.solana.com",
     "confirmed"
   );
   const wallet = {
     publicKey: kp.publicKey,
-    signTransaction: async <T extends { partialSign: (k: Keypair) => void }>(
+    signTransaction: async <T extends Transaction | VersionedTransaction>(
       tx: T
-    ) => {
-      tx.partialSign(kp);
-      return tx;
-    },
-    signAllTransactions: async <
-      T extends { partialSign: (k: Keypair) => void },
-    >(
+    ) => signWithKeeper(tx, kp),
+    signAllTransactions: async <T extends Transaction | VersionedTransaction>(
       txs: T[]
-    ) => {
-      for (const tx of txs) tx.partialSign(kp);
-      return txs;
-    },
+    ) => txs.map((tx) => signWithKeeper(tx, kp)),
   };
 
   const bal = await connection.getBalance(kp.publicKey);

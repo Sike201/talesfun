@@ -13,6 +13,7 @@ type Props = {
   trades: Trade[];
   solUsd: number | null;
   marketCapUsd: number;
+  totalSupply?: number;
 };
 
 export default function TokenGraduatedActivity({
@@ -20,6 +21,7 @@ export default function TokenGraduatedActivity({
   trades,
   solUsd,
   marketCapUsd,
+  totalSupply = 1_000_000_000,
 }: Props) {
   return (
     <div className="token-activity-table-wrap">
@@ -36,9 +38,13 @@ export default function TokenGraduatedActivity({
           {trades.length > 0 ? (
             trades.map(trade => {
               const valueUsd =
-                solUsd != null && solUsd > 0
+                solUsd != null && solUsd > 0 && trade.solAmount > 0
                   ? trade.solAmount * solUsd
                   : null;
+              const rowMcapUsd =
+                trade.price > 0 && solUsd != null && solUsd > 0
+                  ? trade.price * totalSupply * solUsd
+                  : marketCapUsd;
               return (
                 <div key={trade.id} className="token-activity-row sm:grid">
                   <span className="tabular-nums text-white/45">
@@ -62,13 +68,19 @@ export default function TokenGraduatedActivity({
                     </span>
                   </span>
                   <span className="font-medium tabular-nums text-white/85">
-                    {valueUsd != null ? `$${valueUsd.toFixed(2)}` : "—"}
+                    {valueUsd != null
+                      ? valueUsd >= 0.01
+                        ? `$${valueUsd.toFixed(2)}`
+                        : `$${valueUsd.toFixed(4)}`
+                      : trade.solAmount > 0
+                        ? `${trade.solAmount.toFixed(4)} SOL`
+                        : "—"}
                   </span>
                   <span className="tabular-nums text-white/60">
-                    {formatNumber(trade.tokenAmount)}
+                    {trade.tokenAmount > 0 ? formatNumber(trade.tokenAmount) : "—"}
                   </span>
                   <span className="tabular-nums text-white/50">
-                    {formatUSD(marketCapUsd)}
+                    {formatUSD(rowMcapUsd)}
                   </span>
                   <span className="flex items-center justify-end gap-2">
                     <span

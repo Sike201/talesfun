@@ -9,7 +9,10 @@ type Props = {
   description: string;
   imagePreview: string;
   launchFeeSol?: string | null;
+  /** @deprecated Creator fees removed — kept for call-site compat. */
   creatorFeePct?: number;
+  curveFeePct?: number;
+  swapFeePct?: number;
 };
 
 export default function CoinPreview({
@@ -18,7 +21,8 @@ export default function CoinPreview({
   description,
   imagePreview,
   launchFeeSol,
-  creatorFeePct = 1,
+  curveFeePct = 1,
+  swapFeePct = 0.3,
 }: Props) {
   const displayName = name.trim() || "Your token";
   const displayTicker = ticker.trim() || "TICKER";
@@ -80,12 +84,18 @@ export default function CoinPreview({
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-white/35">Creator fee</p>
+              <p className="text-[11px] text-white/35">Curve fee</p>
               <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
-                {creatorFeePct.toFixed(1)}%
+                {curveFeePct.toFixed(1)}%
               </p>
             </div>
             <div>
+              <p className="text-[11px] text-white/35">Omnipair fee</p>
+              <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
+                {swapFeePct.toFixed(2)}%
+              </p>
+            </div>
+            <div className="col-span-2">
               <p className="text-[11px] text-white/35">Launch fee</p>
               <p className="mt-0.5 text-[13px] font-medium tabular-nums text-white/85">
                 {feeLabel}

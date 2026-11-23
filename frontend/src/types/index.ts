@@ -64,7 +64,7 @@ export interface CreatorStats {
 
 export const FIXED_SUPPLY = 1_000_000_000;
 
-/** Display / progress target; must match deployed program threshold. Default 85 (prod). Set `NEXT_PUBLIC_GRADUATION_SOL=5` when using a `dev-graduation` program build. */
+/** Display / progress target; must match deployed program threshold. Default 85 (prod). Set `NEXT_PUBLIC_GRADUATION_SOL=0.5` when using a `dev-graduation` program build. */
 export const GRADUATION_SOL: number = (() => {
   const raw = process.env.NEXT_PUBLIC_GRADUATION_SOL;
   if (raw != null && raw !== "") {
@@ -86,7 +86,12 @@ export const OMNIPAIR_PAIR_FEE_SOL: number = (() => {
   }
   return 0.25;
 })();
-export const CREATOR_FEE_BPS = 50;
-export const LP_FEE_BPS = 50;
+/** Creator fee removed — kept at 0 for legacy quote helpers. */
+export const CREATOR_FEE_BPS = 0;
+/** Bonding-curve fee that stays in the vault as liquidity (1%). */
+export const LP_FEE_BPS = 100;
+/** Total bonding-curve fee (1%). Omnipair market swap fee is separate (30 bps). */
 export const TOTAL_FEE_BPS = 100;
+/** Omnipair / Dusk base swap fee when opening a graduated market. */
+export const OMNIPAIR_SWAP_FEE_BPS = 30;
 export const PROGRAM_ID = "72bwK5ffBy2vRTu694L8WtQ6xaXYA8ePJtxB34fnV2wv";
