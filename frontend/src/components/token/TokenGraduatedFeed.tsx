@@ -34,14 +34,21 @@ export default function TokenGraduatedFeed({
   const [section, setSection] = useState<GraduatedFeedSection>(
     initialSection === "holders" ? "holders" : "activity"
   );
-  const { holders, loading: holdersListLoading } = useMintHolders(
+  // Always fetch the list so count matches the Holders table (excludes pool vault).
+  const { holders, loading: holdersListLoading, count: listCount } = useMintHolders(
     token.mint,
-    section === "holders" || holderCount == null,
+    true,
     token.gammPool ? [token.gammPool] : []
   );
 
   const displayCount =
-    holders.length > 0 ? holders.length : holderCount;
+    listCount > 0
+      ? listCount
+      : holdersListLoading
+        ? holderCount
+        : listCount === 0 && !holdersListLoading
+          ? 0
+          : holderCount;
 
   return (
     <section className="token-feed">
@@ -70,7 +77,7 @@ export default function TokenGraduatedFeed({
         >
           Holders
           <span className="ml-2 text-sm font-normal text-white/40">
-            {holderLoading && holdersListLoading
+            {holdersListLoading && holderLoading
               ? "…"
               : `${formatNumber(displayCount ?? 0)}`}
           </span>

@@ -1,7 +1,7 @@
 /**
- * Market-make small Omnipair buys/sells for a few minutes so charts fill with candles.
+ * Market-make small Omnipair buys/sells so charts fill with candles.
  * Usage:
- *   npx tsx --env-file=.env.local scripts/devnet-market-make.ts <mint> [minutes=3]
+ *   npx tsx --env-file=.env.local scripts/devnet-market-make.ts <mint> [rounds=8]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -16,10 +16,21 @@ import { fetchOmnipairPoolSnapshot } from "../src/lib/omnipairPoolState";
 import { sendOmnipairSwapTx } from "../src/lib/omnipairSwap";
 import { upsertLocalTrade } from "../src/lib/localTradeStore";
 
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function log(...args: unknown[]) {
+  console.log(...args);
+  if (typeof (console as { flush?: () => void }).flush === "function") {
+    (console as { flush?: () => void }).flush?.();
+  }
+}
+
 async function main() {
   const mintStr = process.argv[2];
-  const minutes = Math.max(1, Number(process.argv[3] || "3"));
-  if (!mintStr) throw new Error("Usage: … <mint> [minutes]");
+  const rounds = Math.max(1, Number(process.argv[3] || "8"));
+  if (!mintStr) throw new Error("Usage: … <mint> [rounds=8]");
 
   const mint = new PublicKey(mintStr);
   const secret = JSON.parse(
@@ -47,33 +58,30 @@ async function main() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const state = await (program.account as any).tokenState.fetch(pda);
   const token = tokenStateToToken(state, mintStr);
-  if (!token.gammPool) throw new Error("no gamm pool — token not graduated/bootstrapped");
+  if (!token.gammPool) throw new Error("no gamm pool");
 
-  const until = Date.now() + minutes * 60_000;
-  let i = 0;
-  console.log("MM start", {
+  log("MM start", {
     mint: mintStr,
     pool: token.gammPool,
-    minutes,
+    rounds,
     payer: kp.publicKey.toBase58(),
   });
 
-  while (Date.now() < until) {
-    i += 1;
-    const snap = await fetchOmnipairPoolSnapshot(
-      connection,
-      token.gammPool,
-      mintStr,
-      kp.publicKey
-    );
-    if (!snap.ok) {
-      console.warn("snapshot fail", snap.message);
-      await sleep(4000);
-      continue;
-    }
-
-    const buySol = 0.008 + Math.random() * 0.012; // 0.008–0.02 SOL
+  for (let i = 1; i <= rounds; i++) {
     try {
+      const snap = await fetchOmnipairPoolSnapshot(
+        connection,
+        token.gammPool,
+        mintStr,
+        kp.publicKey
+      );
+      if (!snap.ok) {
+        log(`#${i} snapshot fail`, snap.message);
+        await sleep(2000);
+        continue;
+      }
+
+      const buySol = 0.008 + Math.random() * 0.012;
       const buy = await sendOmnipairSwapTx({
         connection,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -81,7 +89,7 @@ async function main() {
         snapshot: snap.data,
         side: "buy",
         amountUi: buySol,
-        slippagePercent: 8,
+        slippagePercent: 10,
       });
       upsertLocalTrade({
         mint: mintStr,
@@ -94,60 +102,60 @@ async function main() {
         price_sol: buy.fill.price_sol,
         source: "omnipair",
       });
-      console.log(`#${i} BUY`, buySol.toFixed(4), "SOL", buy.signature.slice(0, 12));
-    } catch (e) {
-      console.warn(`#${i} BUY fail`, e instanceof Error ? e.message : e);
-    }
+      log(`#${i} BUY`, buySol.toFixed(4), "SOL", buy.signature.slice(0, 12));
 
-    await sleep(2500 + Math.floor(Math.random() * 2000));
+      await sleep(1500);
 
-    const ata = getAssociatedTokenAddressSync(mint, kp.publicKey);
-    const bal = await connection.getTokenAccountBalance(ata, "confirmed").catch(() => null);
-    const ui = Number(bal?.value.uiAmountString ?? "0");
-    if (ui > 100) {
-      const sellUi = Math.min(ui * (0.35 + Math.random() * 0.25), ui * 0.6);
-      try {
-        const snap2 = await fetchOmnipairPoolSnapshot(
-          connection,
-          token.gammPool,
-          mintStr,
-          kp.publicKey
-        );
-        if (!snap2.ok) throw new Error(snap2.message);
-        const sell = await sendOmnipairSwapTx({
-          connection,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          wallet: wallet as any,
-          snapshot: snap2.data,
-          side: "sell",
-          amountUi: sellUi,
-          slippagePercent: 8,
-        });
-        upsertLocalTrade({
-          mint: mintStr,
-          signature: sell.signature,
-          side: "sell",
-          sol_amount_raw: sell.fill.sol_amount_raw,
-          token_amount_raw: sell.fill.token_amount_raw,
-          timestamp: sell.fill.timestamp,
-          wallet: kp.publicKey.toBase58(),
-          price_sol: sell.fill.price_sol,
-          source: "omnipair",
-        });
-        console.log(`#${i} SELL`, sellUi.toFixed(2), "tok", sell.signature.slice(0, 12));
-      } catch (e) {
-        console.warn(`#${i} SELL fail`, e instanceof Error ? e.message : e);
+      const ata = getAssociatedTokenAddressSync(mint, kp.publicKey);
+      const bal = await connection
+        .getTokenAccountBalance(ata, "confirmed")
+        .catch(() => null);
+      const ui = Number(bal?.value.uiAmountString ?? "0");
+      if (!(ui > 50)) {
+        log(`#${i} skip sell (bal ${ui})`);
+        await sleep(1500);
+        continue;
       }
-    }
 
-    await sleep(3500 + Math.floor(Math.random() * 2500));
+      const sellUi = Math.min(ui * (0.3 + Math.random() * 0.25), ui * 0.55);
+      const snap2 = await fetchOmnipairPoolSnapshot(
+        connection,
+        token.gammPool,
+        mintStr,
+        kp.publicKey
+      );
+      if (!snap2.ok) {
+        log(`#${i} sell snapshot fail`, snap2.message);
+        continue;
+      }
+      const sell = await sendOmnipairSwapTx({
+        connection,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        wallet: wallet as any,
+        snapshot: snap2.data,
+        side: "sell",
+        amountUi: sellUi,
+        slippagePercent: 10,
+      });
+      upsertLocalTrade({
+        mint: mintStr,
+        signature: sell.signature,
+        side: "sell",
+        sol_amount_raw: sell.fill.sol_amount_raw,
+        token_amount_raw: sell.fill.token_amount_raw,
+        timestamp: sell.fill.timestamp,
+        wallet: kp.publicKey.toBase58(),
+        price_sol: sell.fill.price_sol,
+        source: "omnipair",
+      });
+      log(`#${i} SELL`, sellUi.toFixed(2), "tok", sell.signature.slice(0, 12));
+    } catch (e) {
+      log(`#${i} FAIL`, e instanceof Error ? e.message : e);
+    }
+    await sleep(2000);
   }
 
-  console.log("MM done", { rounds: i });
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+  log("MM done", { rounds });
 }
 
 main().catch((e) => {

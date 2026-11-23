@@ -205,7 +205,11 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   const [postTradeSyncing, setPostTradeSyncing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [metadataPending, setMetadataPending] = useState(false);
-  const { count: holderCount, loading: holderLoading } = useMintHolderCount(token?.mint);
+  const { count: holderCount, loading: holderLoading } = useMintHolderCount(
+    token?.mint,
+    true,
+    token?.gammPool ? [token.gammPool] : []
+  );
   const [omnipairBootstrapBusy, setOmnipairBootstrapBusy] = useState(false);
 
   const omnipairPoolLiveForHook = useMemo(

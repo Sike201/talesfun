@@ -1,9 +1,5 @@
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { Connection, PublicKey } from "@solana/web3.js";
-import type { ParsedAccountData } from "@solana/web3.js";
-
-/** Classic SPL token account size (no extensions). */
-const SPL_TOKEN_ACCOUNT_DATA_SIZE = 165;
+import type { Connection } from "@solana/web3.js";
+import { fetchSplMintHolders } from "@/lib/tokenHolders";
 
 /** Cache TTL — stay within ~30–60s window. */
 const HOLDER_COUNT_TTL_MS = 45_000;
@@ -14,67 +10,46 @@ const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<number>>();
 
 /**
- * Count distinct wallet owners with strictly positive raw token balance for `mint`.
- * Uses the same RPC as `Connection` (e.g. Helius via `NEXT_PUBLIC_SOLANA_RPC_URL`).
+ * Count distinct wallet owners with positive balance, excluding pool / burn sinks.
+ * Same source as the Holders list so the badge and table never disagree.
  */
 export async function fetchSplMintHolderCount(
   connection: Connection,
-  mintStr: string
+  mintStr: string,
+  opts?: { excludeOwners?: string[] }
 ): Promise<number> {
-  const mint = new PublicKey(mintStr);
-  const accounts = await connection.getParsedProgramAccounts(TOKEN_PROGRAM_ID, {
-    filters: [
-      { dataSize: SPL_TOKEN_ACCOUNT_DATA_SIZE },
-      { memcmp: { offset: 0, bytes: mint.toBase58() } },
-    ],
-    commitment: "confirmed",
+  const holders = await fetchSplMintHolders(connection, mintStr, {
+    decimals: 6,
+    limit: 500,
+    excludeOwners: opts?.excludeOwners,
   });
-
-  const ownersWithBalance = new Set<string>();
-  for (const { account } of accounts) {
-    const data = account.data as ParsedAccountData;
-    if (data?.parsed?.type !== "account") continue;
-    const info = data.parsed.info as {
-      owner?: string;
-      tokenAmount?: { amount?: string };
-    };
-    const raw = info?.tokenAmount?.amount;
-    if (raw === undefined || raw === "0") continue;
-    try {
-      if (BigInt(raw) <= BigInt(0)) continue;
-    } catch {
-      continue;
-    }
-    const owner = info?.owner;
-    if (typeof owner === "string" && owner.length > 0) {
-      ownersWithBalance.add(owner);
-    }
-  }
-  return ownersWithBalance.size;
+  return holders.length;
 }
 
 export async function getCachedSplMintHolderCount(
   connection: Connection,
-  mintStr: string
+  mintStr: string,
+  opts?: { excludeOwners?: string[] }
 ): Promise<number> {
+  const key = `${mintStr}:${(opts?.excludeOwners ?? []).join(",")}`;
   const now = Date.now();
-  const hit = cache.get(mintStr);
+  const hit = cache.get(key);
   if (hit && hit.expiresAt > now) {
     return hit.value;
   }
 
-  const pending = inflight.get(mintStr);
+  const pending = inflight.get(key);
   if (pending) return pending;
 
-  const promise = fetchSplMintHolderCount(connection, mintStr)
+  const promise = fetchSplMintHolderCount(connection, mintStr, opts)
     .then((value) => {
-      cache.set(mintStr, { value, expiresAt: Date.now() + HOLDER_COUNT_TTL_MS });
+      cache.set(key, { value, expiresAt: Date.now() + HOLDER_COUNT_TTL_MS });
       return value;
     })
     .finally(() => {
-      inflight.delete(mintStr);
+      inflight.delete(key);
     });
 
-  inflight.set(mintStr, promise);
+  inflight.set(key, promise);
   return promise;
 }

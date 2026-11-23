@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, type ReactNode } from "react";
-import Image from "next/image";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
@@ -22,16 +21,22 @@ import { useSolUsd } from "@/hooks/useSolUsd";
 
 type Mode = "swap" | "leverage" | "borrow";
 
-/** Tiny Omnipair brand mark (beta.omnipair.fi) — same for all tabs to avoid vibecode crop icons. */
-function OmnipairTabIcon() {
+/** Mode icons scraped from beta.omnipair.fi trade tabs (Leverage / Borrow / Swap). */
+function OmnipairTabIcon({ mode }: { mode: Mode }) {
+  const src =
+    mode === "leverage"
+      ? "/icons/omnipair/tab-leverage.svg"
+      : mode === "borrow"
+        ? "/icons/omnipair/tab-borrow.svg"
+        : "/icons/omnipair/tab-swap.svg";
   return (
-    <Image
-      src="/icons/omnipair/mark-small-dark.svg"
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
       alt=""
-      width={12}
-      height={12}
-      className="h-3 w-3 shrink-0 opacity-80"
-      unoptimized
+      width={14}
+      height={14}
+      className="h-3.5 w-3.5 shrink-0 opacity-90 [filter:invert(1)]"
     />
   );
 }
@@ -304,7 +309,7 @@ export default function TradingInterface({
                 : "text-white/40 hover:text-white/65"
             )}
           >
-            <OmnipairTabIcon />
+            <OmnipairTabIcon mode={t.id} />
             {t.label}
           </button>
         ))}
@@ -1034,7 +1039,7 @@ function BorrowPanel({
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-[10px] text-white/45">
-        <OmnipairTabIcon />
+        <OmnipairTabIcon mode="borrow" />
         Isolated borrow — post {displayTicker}, receive SOL (docs.omnipair.fi)
       </div>
       <TalesTradeField label="Collateral" suffix={displayTicker}>

@@ -4,10 +4,15 @@ import { useConnection } from "@solana/wallet-adapter-react";
 import { useEffect, useState } from "react";
 import { getCachedSplMintHolderCount } from "@/lib/tokenHolderCount";
 
-export function useMintHolderCount(mint: string | undefined, enabled = true) {
+export function useMintHolderCount(
+  mint: string | undefined,
+  enabled = true,
+  excludeOwners: string[] = []
+) {
   const { connection } = useConnection();
   const [count, setCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const excludeKey = excludeOwners.join(",");
 
   useEffect(() => {
     if (!enabled || !mint?.trim()) {
@@ -20,7 +25,9 @@ export function useMintHolderCount(mint: string | undefined, enabled = true) {
     setLoading(true);
     setCount(null);
 
-    void getCachedSplMintHolderCount(connection, mint.trim())
+    void getCachedSplMintHolderCount(connection, mint.trim(), {
+      excludeOwners,
+    })
       .then((n) => {
         if (!cancelled) setCount(n);
       })
@@ -34,7 +41,9 @@ export function useMintHolderCount(mint: string | undefined, enabled = true) {
     return () => {
       cancelled = true;
     };
-  }, [connection, mint, enabled]);
+    // excludeKey captures excludeOwners content without referential churn
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection, mint, enabled, excludeKey]);
 
   return { count, loading };
 }
