@@ -42,7 +42,7 @@ export function listLocalTrades(mint?: string): CanonicalTradeRow[] {
 
 export function sumLocalVolume24hLamports(mint?: string): string {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  let sum = 0n;
+  let sum = BigInt(0);
   for (const t of listLocalTrades(mint)) {
     const ts = Date.parse(t.timestamp);
     if (!Number.isFinite(ts) || ts < cutoff) continue;

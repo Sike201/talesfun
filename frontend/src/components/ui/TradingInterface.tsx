@@ -1034,7 +1034,7 @@ function BorrowPanel({
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-[10px] text-white/45">
-        <OmnipairTabIcon alt="Omnipair" />
+        <OmnipairTabIcon />
         Isolated borrow — post {displayTicker}, receive SOL (docs.omnipair.fi)
       </div>
       <TalesTradeField label="Collateral" suffix={displayTicker}>

@@ -55,13 +55,13 @@ export async function fetchSplMintHolders(
     } catch {
       continue;
     }
-    if (amt <= 0n) continue;
+    if (amt <= BigInt(0)) continue;
     const owner = info?.owner;
     if (typeof owner !== "string" || !owner) continue;
     // Skip burn sinks + pool / protocol accounts
     if (owner.startsWith("1nc1nerator")) continue;
     if (exclude.has(owner)) continue;
-    byOwner.set(owner, (byOwner.get(owner) ?? 0n) + amt);
+    byOwner.set(owner, (byOwner.get(owner) ?? BigInt(0)) + amt);
   }
 
   const rows: MintHolder[] = [...byOwner.entries()]

@@ -347,7 +347,7 @@ export async function sendOmnipairLeverageStepTx(params: {
     let amount = initialRaw;
     let lastErr: unknown;
     for (let attempt = 0; attempt < 6; attempt++) {
-      if (amount <= 0n) break;
+      if (amount <= BigInt(0)) break;
       try {
         const sig = await sendOmnipairBorrowTx({
           connection,
@@ -360,9 +360,9 @@ export async function sendOmnipairLeverageStepTx(params: {
       } catch (e) {
         lastErr = e;
         if (!isBorrowPowerErr(e)) throw e;
-        amount = (amount * 55n) / 100n; // keep ~55% of prior try
+        amount = (amount * BigInt(55)) / BigInt(100); // keep ~55% of prior try
         console.warn(
-          `[omnipair:leverage] BorrowingPowerExceeded — retry @ ${(Number(amount) / Number(initialRaw || 1n) * 100).toFixed(0)}%`
+          `[omnipair:leverage] BorrowingPowerExceeded — retry @ ${(Number(amount) / Number(initialRaw || BigInt(1)) * 100).toFixed(0)}%`
         );
       }
     }
