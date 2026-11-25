@@ -33,7 +33,7 @@ async function main() {
     creator_fee_recipient: t.creatorFeeRecipient || null,
     name: t.name,
     symbol: t.ticker,
-    uri: t.uri || null,
+    uri: (t as { uri?: string }).uri || null,
     image_url: t.imageUrl || null,
     description: t.description || null,
     about: t.description || null,
