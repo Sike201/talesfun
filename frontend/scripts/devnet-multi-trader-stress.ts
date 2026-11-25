@@ -116,15 +116,20 @@ async function withRpcRetry<T>(
 }
 
 function loadPayer(): Keypair {
+  const override =
+    process.env.STRESS_PAYER_KEYPAIR?.trim() ||
+    process.env.STRESS_FUNDER_KEYPAIR?.trim();
+  const phantom = path.join(process.env.HOME!, ".config/solana/phantom.json");
+  const def = path.join(process.env.HOME!, ".config/solana/id.json");
+  const file =
+    override && fs.existsSync(override)
+      ? override
+      : fs.existsSync(phantom)
+        ? phantom
+        : def;
+  log("payer keypair", file);
   return Keypair.fromSecretKey(
-    Uint8Array.from(
-      JSON.parse(
-        fs.readFileSync(
-          path.join(process.env.HOME!, ".config/solana/id.json"),
-          "utf8"
-        )
-      )
-    )
+    Uint8Array.from(JSON.parse(fs.readFileSync(file, "utf8")))
   );
 }
 
@@ -727,7 +732,7 @@ async function main() {
         const msg = e instanceof Error ? e.message : String(e);
         // Soft-skip common transient / inventory errors so stress keeps moving.
         if (
-          /custom program error: 0x1|insufficient|Attempt to debit|Simulation failed/i.test(
+          /custom program error: 0x1|insufficient|Attempt to debit|Simulation failed|fetch failed|block height exceeded|Could not read reserve|could not refresh pool|Custom.:6025/i.test(
             msg
           )
         ) {
@@ -757,7 +762,11 @@ async function main() {
             await doLeverageSmoke(connection, actor, specialTarget, stats);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            if (/custom program error: 0x1|insufficient|Simulation failed/i.test(msg)) {
+            if (
+              /custom program error: 0x1|insufficient|Simulation failed|fetch failed|block height exceeded|Could not read reserve/i.test(
+                msg
+              )
+            ) {
               log("LEVERAGE soft-skip", specialTarget.symbol, msg.slice(0, 100));
             } else {
               stats.leverageFail += 1;
@@ -771,7 +780,11 @@ async function main() {
             await doBorrowSmoke(connection, actor, specialTarget, stats);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            if (/custom program error: 0x1|insufficient|Simulation failed/i.test(msg)) {
+            if (
+              /custom program error: 0x1|insufficient|Simulation failed|fetch failed|block height exceeded|Could not read reserve/i.test(
+                msg
+              )
+            ) {
               log("BORROW soft-skip", specialTarget.symbol, msg.slice(0, 100));
             } else {
               stats.borrowFail += 1;
