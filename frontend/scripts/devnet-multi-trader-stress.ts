@@ -334,7 +334,58 @@ async function doSwapRound(
 ) {
   const mint = new PublicKey(target.mint);
   const wallet = walletOf(trader);
-  const balSol = (await connection.getBalance(trader.publicKey)) / 1e9;
+  let balSol = (await connection.getBalance(trader.publicKey)) / 1e9;
+  // If SOL is low but we hold inventory, sell first to recycle capital.
+  if (balSol < 0.015) {
+    const emergencyTok = await tokenUiBalance(connection, mint, trader.publicKey);
+    if (emergencyTok > 40) {
+      const snapE = await fetchOmnipairPoolSnapshot(
+        connection,
+        target.gammPool,
+        target.mint,
+        trader.publicKey
+      );
+      if (snapE.ok) {
+        const sellUi = Math.min(emergencyTok * 0.55, emergencyTok);
+        try {
+          const sell = await withRpcRetry(
+            `t#${traderIdx} recycle ${target.symbol}`,
+            () =>
+              sendOmnipairSwapTx({
+                connection,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                wallet: wallet as any,
+                snapshot: snapE.data,
+                side: "sell",
+                amountUi: sellUi,
+                slippagePercent: 16,
+              })
+          );
+          await upsertCanonicalTrade({
+            mint: target.mint,
+            signature: sell.signature,
+            side: "sell",
+            sol_amount_raw: sell.fill.sol_amount_raw,
+            token_amount_raw: sell.fill.token_amount_raw,
+            timestamp: sell.fill.timestamp,
+            wallet: trader.publicKey.toBase58(),
+            price_sol: sell.fill.price_sol,
+            source: "omnipair",
+          });
+          stats.sells += 1;
+          bumpMint(stats, target.mint, "sells");
+          log(`t#${traderIdx} RECYCLE SELL`, target.symbol, sellUi.toFixed(1));
+          balSol = (await connection.getBalance(trader.publicKey)) / 1e9;
+        } catch (e) {
+          log(
+            `t#${traderIdx} recycle fail`,
+            target.symbol,
+            e instanceof Error ? e.message.slice(0, 100) : e
+          );
+        }
+      }
+    }
+  }
   if (balSol < 0.012) {
     log(`t#${traderIdx} skip low SOL`, balSol.toFixed(4), target.symbol);
     return;
@@ -619,6 +670,7 @@ async function main() {
   const workers: Promise<void>[] = [];
   let round = 0;
   let lastSpecial = 0;
+  let lastRefill = 0;
 
   while (Date.now() < deadline) {
     round += 1;
@@ -629,6 +681,38 @@ async function main() {
         if (refreshed.length) targets = refreshed;
       } catch {
         /* keep old */
+      }
+    }
+
+    // Periodic micro-refill so concurrent wallets don't all stall on dust SOL.
+    if (Date.now() - lastRefill > 8 * 60_000) {
+      lastRefill = Date.now();
+      try {
+        const want = Math.floor(0.03 * LAMPORTS_PER_SOL);
+        let payerLeft = await connection.getBalance(payer.publicKey);
+        for (let i = 0; i < traders.length; i++) {
+          if (payerLeft < want + 80_000_000) break;
+          const t = traders[i]!;
+          const bal = await connection.getBalance(t.publicKey);
+          if (bal >= want * 0.85) continue;
+          const top = want - bal;
+          if (top <= 0) continue;
+          const tx = new Transaction().add(
+            SystemProgram.transfer({
+              fromPubkey: payer.publicKey,
+              toPubkey: t.publicKey,
+              lamports: top,
+            })
+          );
+          await sendAndConfirmTransaction(connection, tx, [payer], {
+            commitment: "confirmed",
+            maxRetries: 2,
+          });
+          payerLeft -= top;
+          log(`auto-refill t#${i}`, (top / 1e9).toFixed(4));
+        }
+      } catch (e) {
+        log("auto-refill fail", e instanceof Error ? e.message : e);
       }
     }
 
