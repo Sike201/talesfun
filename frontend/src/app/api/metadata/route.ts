@@ -53,7 +53,12 @@ export async function GET(request: NextRequest) {
     try {
       const json = await fetchJson(a.url, a.headers);
       if (json && typeof json === "object") {
-        return Response.json(json);
+        return Response.json(json, {
+          headers: {
+            // Metadata JSON is immutable per CID — cache hard so cards hydrate fast.
+            "Cache-Control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400",
+          },
+        });
       }
     } catch {
       /* try next */

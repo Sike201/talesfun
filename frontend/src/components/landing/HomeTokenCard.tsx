@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Token } from "@/types";
 import { formatUSD, calcBondingCurveProgress, timeAgo } from "@/lib/utils";
-import { extractIpfsPath, resolveToHttps } from "@/lib/ipfs";
+import { tokenMediaSrc } from "@/lib/tokenMedia";
 
 type Props = {
   token: Token;
@@ -13,16 +13,9 @@ type Props = {
   rank?: number;
   lastTradeAt?: string | null;
   showLastTradedBadge?: boolean;
+  /** Eager-load for first-row / hero cards. */
+  priority?: boolean;
 };
-
-function mediaSrc(raw?: string): string | undefined {
-  const t = raw?.trim();
-  if (!t) return undefined;
-  const path = extractIpfsPath(t);
-  if (path) return `/api/media?cid=${encodeURIComponent(path)}`;
-  const https = resolveToHttps(t);
-  return https || undefined;
-}
 
 function tintFromSeed(seed: string): string {
   let h = 0;
@@ -35,9 +28,10 @@ export default function HomeTokenCard({
   token,
   showLastTradedBadge,
   lastTradeAt,
+  priority = false,
 }: Props) {
   const [failed, setFailed] = useState(false);
-  const resolved = useMemo(() => mediaSrc(token.imageUrl), [token.imageUrl]);
+  const resolved = useMemo(() => tokenMediaSrc(token.imageUrl), [token.imageUrl]);
   const showImg = !!resolved && !failed;
   const graduated = token.phase === "graduated";
   const bonding = !graduated && token.phase !== "ready_to_graduate";
@@ -56,7 +50,9 @@ export default function HomeTokenCard({
             alt=""
             className="absolute inset-0 size-full object-cover object-center"
             onError={() => setFailed(true)}
-            loading="lazy"
+            loading={priority ? "eager" : "lazy"}
+            fetchPriority={priority ? "high" : "auto"}
+            decoding="async"
             referrerPolicy="no-referrer"
           />
         ) : (

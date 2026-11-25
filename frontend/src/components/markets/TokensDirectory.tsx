@@ -89,7 +89,7 @@ export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: 
                     transition={positionSpring}
                     className="min-w-0"
                   >
-                    <LaunchpadTokenCard token={t} featured />
+                    <LaunchpadTokenCard token={t} featured priority />
                   </motion.div>
                 ))}
               </div>
@@ -145,7 +145,7 @@ export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: 
             <>
               <LayoutGroup id="token-grid">
                 <div className="mt-6 grid grid-cols-2 gap-x-3 gap-y-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                  {visible.map(token => (
+                  {visible.map((token, i) => (
                     <motion.div
                       key={token.mint}
                       layout
@@ -153,7 +153,10 @@ export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: 
                       transition={positionSpring}
                       className="min-w-0"
                     >
-                      <LaunchpadTokenCard token={token} />
+                      <LaunchpadTokenCard
+                        token={token}
+                        priority={i < 8}
+                      />
                     </motion.div>
                   ))}
                 </div>

@@ -61,20 +61,28 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: "Missing cid or url" }, { status: 400 });
   }
 
+  // Fast path: redirect to the dedicated gateway so the browser hits CDN directly.
+  const jwt = process.env.PINATA_JWT?.trim();
+  const dedicated = `https://${pinataDedicatedGatewayHost()}/ipfs/${path}`;
+  if (!jwt) {
+    return Response.redirect(dedicated, 302);
+  }
+
   const hit = await fetchIpfs(path);
   if (!hit) {
-    return Response.json({ error: "Failed to load media" }, { status: 502 });
+    // Last resort: still send the browser to the public dedicated URL.
+    return Response.redirect(dedicated, 302);
   }
 
   const contentType =
     hit.res.headers.get("content-type") || "application/octet-stream";
-  const buf = await hit.res.arrayBuffer();
-
-  return new Response(buf, {
+  // Stream when possible — avoid buffering full image on the edge.
+  return new Response(hit.res.body, {
     status: 200,
     headers: {
       "Content-Type": contentType,
-      "Cache-Control": "public, max-age=86400, s-maxage=86400, immutable",
+      "Cache-Control": "public, max-age=86400, s-maxage=604800, immutable",
+      "CDN-Cache-Control": "public, s-maxage=604800, immutable",
     },
   });
 }

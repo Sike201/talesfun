@@ -4,29 +4,25 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { Token } from "@/types";
 import { formatUSD, calcBondingCurveProgress, timeAgo, cn } from "@/lib/utils";
-import { extractIpfsPath, resolveToHttps } from "@/lib/ipfs";
-
-function mediaSrc(raw?: string): string | undefined {
-  const t = raw?.trim();
-  if (!t) return undefined;
-  const path = extractIpfsPath(t);
-  if (path) return `/api/media?cid=${encodeURIComponent(path)}`;
-  return resolveToHttps(t) || undefined;
-}
+import { tokenMediaSrc } from "@/lib/tokenMedia";
 
 export default function LaunchpadTokenCard({
   token,
   featured = false,
+  priority = false,
 }: {
   token: Token;
   featured?: boolean;
+  /** Eager-load for above-the-fold cards so art appears with the text. */
+  priority?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const resolved = useMemo(() => mediaSrc(token.imageUrl), [token.imageUrl]);
+  const resolved = useMemo(() => tokenMediaSrc(token.imageUrl), [token.imageUrl]);
   const showImg = !!resolved && !failed;
   const graduated = token.phase === "graduated";
   const bonding = !graduated;
   const progress = calcBondingCurveProgress(token.solRaised, token.targetSOL);
+  const eager = featured || priority;
 
   return (
     <Link
@@ -46,7 +42,9 @@ export default function LaunchpadTokenCard({
             alt=""
             className="absolute inset-0 size-full object-cover object-center"
             onError={() => setFailed(true)}
-            loading="lazy"
+            loading={eager ? "eager" : "lazy"}
+            fetchPriority={eager ? "high" : "auto"}
+            decoding="async"
             referrerPolicy="no-referrer"
           />
         ) : (
