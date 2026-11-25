@@ -16,7 +16,12 @@ import { readLocalTradeActivity } from "@/lib/recentActivityLocal";
 import { isDemoMarketMint } from "@/lib/demoMarket";
 import type { Token } from "@/types";
 
-export type DirectoryTab = "trending" | "new" | "near" | "graduated";
+export type DirectoryTab =
+  | "trending"
+  | "new"
+  | "near"
+  | "graduated"
+  | "mcap";
 
 function bondingProgressPct(t: Token): number {
   if (t.phase === "ready_to_graduate" || t.phase === "graduated") return 100;
@@ -191,6 +196,13 @@ export function useTokensDirectory() {
     return list;
   }, [tokens]);
 
+  /** Market cap = highest USD mcap first (any phase). */
+  const sortedByMcap = useMemo(() => {
+    const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
+    list.sort((a, b) => b.marketCap - a.marketCap);
+    return list;
+  }, [tokens]);
+
   function filterByTab(tab: DirectoryTab, query: string): Token[] {
     const q = query.trim().toLowerCase();
     let list: Token[];
@@ -211,6 +223,9 @@ export function useTokensDirectory() {
       case "graduated":
         list = sortedTrending.filter(t => t.phase === "graduated");
         break;
+      case "mcap":
+        list = sortedByMcap;
+        break;
       default:
         list = sortedTrending;
     }
@@ -230,6 +245,7 @@ export function useTokensDirectory() {
     lastTradeByMint,
     sortedTrending,
     sortedNew,
+    sortedByMcap,
     filterByTab,
     loading: tokens === null,
   };

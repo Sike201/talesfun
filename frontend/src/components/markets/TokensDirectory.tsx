@@ -16,6 +16,7 @@ const TABS: { id: DirectoryTab; label: string }[] = [
   { id: "new", label: "New" },
   { id: "near", label: "Near graduation" },
   { id: "graduated", label: "Graduated" },
+  { id: "mcap", label: "Market cap" },
 ];
 
 const PAGE_SIZE = 30;
