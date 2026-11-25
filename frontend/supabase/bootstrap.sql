@@ -104,3 +104,13 @@ create policy "Allow public read trades" on public.trades for select using (true
 
 drop policy if exists "platform_stats_public_read" on public.platform_stats;
 create policy "platform_stats_public_read" on public.platform_stats for select using (true);
+
+-- Table privileges (RLS policies alone are not enough on a fresh project).
+grant usage on schema public to anon, authenticated, service_role;
+grant select on table public.tokens to anon, authenticated;
+grant select on table public.trades to anon, authenticated;
+grant select on table public.platform_stats to anon, authenticated;
+grant all on table public.tokens to service_role;
+grant all on table public.trades to service_role;
+grant all on table public.platform_stats to service_role;
+grant usage, select on all sequences in schema public to anon, authenticated, service_role;
