@@ -32,8 +32,9 @@ export async function GET(request: NextRequest) {
   try {
     let q = supabaseAdmin
       .from("trades")
-      .select("mint, sol_amount_raw, timestamp")
-      .gte("timestamp", since);
+      .select("mint, sol_amount_raw, timestamp, side")
+      .gte("timestamp", since)
+      .in("side", ["buy", "sell"]);
     if (mintFilter) q = q.eq("mint", mintFilter);
     const { data, error } = await q;
     if (error) {
@@ -51,6 +52,7 @@ export async function GET(request: NextRequest) {
   }
 
   for (const t of listLocalTrades(mintFilter ?? undefined)) {
+    if (t.side !== "buy" && t.side !== "sell") continue;
     const ts = Date.parse(t.timestamp);
     if (!Number.isFinite(ts) || ts < sinceMs) continue;
     addRow(t.mint, t.sol_amount_raw);

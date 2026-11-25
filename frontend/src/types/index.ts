@@ -41,11 +41,19 @@ export interface Token {
   volume24h?: number;
 }
 
+/** Activity row kind shown in token feed (swaps + lending). */
+export type TradeActivityType =
+  | "buy"
+  | "sell"
+  | "long"
+  | "short"
+  | "borrow";
+
 export interface Trade {
   id: string;
   tokenMint: string;
   trader: string;
-  type: "buy" | "sell";
+  type: TradeActivityType;
   solAmount: number;
   tokenAmount: number;
   price: number;

@@ -4,7 +4,7 @@ export type LocalTradeActivity = {
   mint: string;
   timestamp: string;
   signature: string;
-  side: "buy" | "sell";
+  side: "buy" | "sell" | "long" | "short" | "borrow";
   sol_amount_raw?: string;
   token_amount_raw?: string;
   wallet?: string;

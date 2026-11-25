@@ -1,13 +1,13 @@
 export type LaunchpadTradePayload = {
   mint: string;
   signature: string;
-  side: "buy" | "sell";
+  side: "buy" | "sell" | "long" | "short" | "borrow";
   sol_amount_raw: string;
   token_amount_raw: string;
   timestamp: string;
   wallet: string;
   price_sol: number;
-  /** `bonding` = launchpad curve; `omnipair` = GAMM swap. Requires `trades.source` column in Supabase. */
+  /** `bonding` = launchpad curve; `omnipair` = GAMM swap / lending. Requires `trades.source` column in Supabase. */
   source?: "bonding" | "omnipair";
 };
 

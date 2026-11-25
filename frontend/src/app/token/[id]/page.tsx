@@ -63,6 +63,13 @@ type TradeHistoryRow = {
   source?: string | null;
 };
 
+function activityTypeFromSide(side: string | null | undefined): Trade["type"] {
+  if (side === "sell" || side === "long" || side === "short" || side === "borrow") {
+    return side;
+  }
+  return "buy";
+}
+
 function tradesFromLocalHistory(mint: string): Trade[] {
   return readLocalTradeHistory(mint).map((row, i) => {
     const solRaw = Number(row.sol_amount_raw ?? 0);
@@ -77,7 +84,7 @@ function tradesFromLocalHistory(mint: string): Trade[] {
       id: row.signature || `local-${i}`,
       tokenMint: mint,
       trader: row.wallet ?? "",
-      type: row.side === "sell" ? "sell" : "buy",
+      type: activityTypeFromSide(row.side),
       solAmount: Number.isFinite(solRaw) ? solRaw / 1e9 : 0,
       tokenAmount: Number.isFinite(tokenRaw) ? tokenRaw / 1e6 : 0,
       price,
@@ -130,7 +137,7 @@ function mapTradeHistoryRow(row: TradeHistoryRow): Trade {
     id: typeof row.id === "string" && row.id ? row.id : row.signature,
     tokenMint: row.mint,
     trader: row.wallet ?? "",
-    type: row.side === "sell" ? "sell" : "buy",
+    type: activityTypeFromSide(row.side),
     solAmount: Number.isFinite(solRaw) ? solRaw / 1e9 : 0,
     tokenAmount: Number.isFinite(tokenRaw) ? tokenRaw / 1e6 : 0,
     price: Number.isFinite(priceSol) ? priceSol : 0,

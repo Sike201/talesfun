@@ -2,10 +2,17 @@ import { supabaseAdmin } from "@/lib/supabase-server";
 import { upsertLocalTrade } from "@/lib/localTradeStore";
 
 /** Row shape for POST /api/trades and the Omnipair chain indexer (same upsert). */
+export type CanonicalTradeSide =
+  | "buy"
+  | "sell"
+  | "long"
+  | "short"
+  | "borrow";
+
 export type CanonicalTradeRow = {
   mint: string;
   signature: string;
-  side: "buy" | "sell";
+  side: CanonicalTradeSide;
   sol_amount_raw: string;
   token_amount_raw: string;
   timestamp: string;

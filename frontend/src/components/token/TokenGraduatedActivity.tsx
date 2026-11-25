@@ -1,11 +1,43 @@
 "use client";
 
 import { ArrowUpRight } from "lucide-react";
-import type { Trade } from "@/types";
+import type { Trade, TradeActivityType } from "@/types";
 import { cn, formatNumber, formatUSD, shortenAddress } from "@/lib/utils";
 
 function formatActivityTime(d: Date): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function activityLabel(trade: Trade): string {
+  switch (trade.type) {
+    case "long":
+      return "Long";
+    case "short":
+      return "Short";
+    case "borrow":
+      return "Borrow";
+    case "buy":
+      return trade.source === "omnipair" ? "Swap buy" : "Buy";
+    case "sell":
+      return trade.source === "omnipair" ? "Swap sell" : "Sell";
+    default:
+      return trade.type;
+  }
+}
+
+function activityTone(type: TradeActivityType): string {
+  switch (type) {
+    case "buy":
+    case "long":
+      return "bg-emerald-500/15 text-emerald-400";
+    case "sell":
+    case "short":
+      return "bg-red-500/12 text-red-400";
+    case "borrow":
+      return "bg-sky-500/15 text-sky-300";
+    default:
+      return "bg-white/10 text-white/70";
+  }
 }
 
 type Props = {
@@ -27,7 +59,7 @@ export default function TokenGraduatedActivity({
     <div className="token-activity-table-wrap">
         <div className="token-activity-cols hidden sm:grid">
           <span>Time</span>
-          <span>Trade</span>
+          <span>Action</span>
           <span>Value</span>
           <span>{ticker}</span>
           <span>MCap</span>
@@ -45,6 +77,10 @@ export default function TokenGraduatedActivity({
                 trade.price > 0 && solUsd != null && solUsd > 0
                   ? trade.price * totalSupply * solUsd
                   : marketCapUsd;
+              const isLending =
+                trade.type === "long" ||
+                trade.type === "short" ||
+                trade.type === "borrow";
               return (
                 <div key={trade.id} className="token-activity-row sm:grid">
                   <span className="tabular-nums text-white/45">
@@ -53,13 +89,11 @@ export default function TokenGraduatedActivity({
                   <span>
                     <span
                       className={cn(
-                        "inline-flex rounded-md px-2 py-0.5 text-xs font-semibold capitalize",
-                        trade.type === "buy"
-                          ? "bg-emerald-500/15 text-emerald-400"
-                          : "bg-red-500/12 text-red-400"
+                        "inline-flex rounded-md px-2 py-0.5 text-xs font-semibold",
+                        activityTone(trade.type)
                       )}
                     >
-                      {trade.type}
+                      {activityLabel(trade)}
                       {trade.source === "omnipair" ? (
                         <span className="ml-1 text-[10px] font-medium text-white/35">
                           · Dusk
@@ -80,7 +114,7 @@ export default function TokenGraduatedActivity({
                     {trade.tokenAmount > 0 ? formatNumber(trade.tokenAmount) : "—"}
                   </span>
                   <span className="tabular-nums text-white/50">
-                    {formatUSD(rowMcapUsd)}
+                    {isLending ? "—" : formatUSD(rowMcapUsd)}
                   </span>
                   <span className="flex items-center justify-end gap-2">
                     <span
@@ -106,7 +140,7 @@ export default function TokenGraduatedActivity({
             })
           ) : (
             <p className="px-1 py-14 text-center text-sm text-white/40">
-              No on-chain swaps found for this token yet. Activity fills from Omnipair pair transactions as they land.
+              No on-chain activity yet. Swaps, leverage, and borrows show up here as they land.
             </p>
           )}
         </div>

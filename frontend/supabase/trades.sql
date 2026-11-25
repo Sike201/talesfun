@@ -13,7 +13,7 @@ create table if not exists public.trades (
   id uuid primary key default gen_random_uuid(),
   mint text not null,
   signature text not null unique,
-  side text not null check (side in ('buy', 'sell')),
+  side text not null check (side in ('buy', 'sell', 'long', 'short', 'borrow')),
   sol_amount_raw text not null,
   token_amount_raw text not null,
   timestamp timestamptz not null,

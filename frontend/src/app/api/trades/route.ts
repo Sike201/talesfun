@@ -27,7 +27,15 @@ export async function POST(request: NextRequest) {
 
     const mint = typeof body.mint === "string" ? body.mint.trim() : "";
     const signature = typeof body.signature === "string" ? body.signature.trim() : "";
-    const side = body.side === "sell" ? "sell" : body.side === "buy" ? "buy" : "";
+    const sideRaw = typeof body.side === "string" ? body.side.trim() : "";
+    const side =
+      sideRaw === "buy" ||
+      sideRaw === "sell" ||
+      sideRaw === "long" ||
+      sideRaw === "short" ||
+      sideRaw === "borrow"
+        ? sideRaw
+        : "";
     const sol_amount_raw =
       typeof body.sol_amount_raw === "string" ? body.sol_amount_raw.trim() : "";
     const token_amount_raw =
