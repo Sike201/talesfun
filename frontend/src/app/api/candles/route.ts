@@ -15,6 +15,7 @@ import {
 } from "@/lib/omnipairIndexer";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 const MAX_ROWS = 25_000;
 
@@ -50,19 +51,19 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  const started = Date.now();
   try {
     let rows: { timestamp: string; price_sol: number; sol_amount_raw: string }[] =
       [];
-    let source: "supabase" | "local" | "merged" = "local";
+    let source: "supabase" | "local" | "merged" | "chain" = "supabase";
 
-    // Prefer local journal first for fast paint (Supabase often times out on devnet).
     const local = listLocalTrades(mint).map((t) => ({
       timestamp: t.timestamp,
       price_sol: t.price_sol,
       sol_amount_raw: t.sol_amount_raw,
     }));
-    rows = local;
 
+    // Prefer warm Supabase — charts should not wait on RPC when DB is populated.
     try {
       const { data, error } = await supabaseAdmin
         .from("trades")
@@ -79,16 +80,23 @@ export async function GET(request: NextRequest) {
         }
         rows = [...byTs.values()];
         source = local.length > 0 ? "merged" : "supabase";
+      } else if (local.length > 0) {
+        rows = local;
+        source = "local";
       }
     } catch (e) {
       console.warn("[candles] Supabase unreachable", e);
+      if (local.length > 0) {
+        rows = local;
+        source = "local";
+      }
     }
 
     rows = [...rows].sort(
       (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
     );
 
-    // If journal is cold, pull Omnipair swaps from the pair account first.
+    // Cold DB only — pull Omnipair swaps once, persist for next request.
     if (rows.length === 0) {
       try {
         const indexed = await indexOmnipairSwapsForMint(
@@ -107,7 +115,7 @@ export async function GET(request: NextRequest) {
             price_sol: t.price_sol,
             sol_amount_raw: t.sol_amount_raw,
           }));
-          source = "local";
+          source = "chain";
           rows = [...rows].sort(
             (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
           );
@@ -172,15 +180,30 @@ export async function GET(request: NextRequest) {
       console.log("[candles] price range (SOL/token):", { min: minPx, max: maxPx });
     }
 
-    return Response.json({
+    console.info("[candles] ok", {
       mint,
-      interval,
-      autoSelected: auto,
-      tradeTimeRange,
-      count: candles.length,
-      candles,
       source,
+      count: candles.length,
+      ms: Date.now() - started,
     });
+    return Response.json(
+      {
+        mint,
+        interval,
+        autoSelected: auto,
+        tradeTimeRange,
+        count: candles.length,
+        candles,
+        source,
+        ms: Date.now() - started,
+      },
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=8, stale-while-revalidate=60",
+          "x-tales-candles-source": source,
+        },
+      }
+    );
   } catch (e) {
     console.warn("[candles] error (no synthetic fallback)", e);
     const interval = (auto ? "5m" : parseInterval(intervalParam) ?? "5m") as CandleInterval;

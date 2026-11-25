@@ -7,7 +7,6 @@ import {
 } from "@/lib/omnipairIndexer";
 
 export const dynamic = "force-dynamic";
-/** Allow enough time for one batched RPC sync on Vercel. */
 export const maxDuration = 30;
 
 type Row = {
@@ -65,36 +64,55 @@ async function mergeSupabaseTrades(mint: string, bySig: Map<string, Row>) {
   }
 }
 
-// GET /api/tokens/[mint]/trades — on-chain Omnipair swaps (+ local/Supabase if available)
+function jsonPage(page: Row[], meta?: Record<string, unknown>) {
+  return Response.json(page, {
+    headers: {
+      "Cache-Control": "public, s-maxage=5, stale-while-revalidate=30",
+      ...(meta?.source
+        ? { "x-tales-trades-source": String(meta.source) }
+        : {}),
+    },
+  });
+}
+
+// GET /api/tokens/[mint]/trades
+// Fast path: warm Supabase. Slow path: batched on-chain index when DB is cold.
 export async function GET(
   request: NextRequest,
   ctx: RouteContext<"/api/tokens/[mint]/trades">
 ) {
+  const started = Date.now();
   try {
     const { mint } = await ctx.params;
     const { searchParams } = request.nextUrl;
     const limit = parseInt(searchParams.get("limit") || "50", 10);
     const offset = parseInt(searchParams.get("offset") || "0", 10);
     const skipChain = searchParams.get("skipChain") === "1";
+    const forceSync = searchParams.get("sync") === "1";
     const gammPool = searchParams.get("gammPool")?.trim() || undefined;
 
     const bySig = collectKnownRows(mint);
-    // Cap Supabase wait — dead host must not block the page.
     await Promise.race([
       mergeSupabaseTrades(mint, bySig),
-      new Promise<void>((r) => setTimeout(r, 2500)),
+      new Promise<void>((r) => setTimeout(r, 4000)),
     ]);
 
-    // Live chain sync is the source of truth on Vercel (ephemeral FS + dead Supabase).
-    if (!skipChain) {
+    const warmEnough = bySig.size >= Math.min(10, limit);
+    const shouldSyncChain =
+      !skipChain && (forceSync || bySig.size === 0 || !warmEnough);
+
+    let source: "supabase" | "chain" | "merged" =
+      bySig.size > 0 ? "supabase" : "supabase";
+
+    if (shouldSyncChain) {
       try {
         const connection = getIndexerRpcConnection();
         const indexed = await indexOmnipairSwapsForMint(connection, mint, {
           limitPerPair: Math.min(80, Math.max(limit, 40)),
           gammPool,
-          // Rebuild activity from chain even when journal is empty.
-          knownSignatures: new Set(),
-          deadlineMs: Date.now() + 18_000,
+          // When DB is warm, only fill gaps; when cold, rebuild from chain.
+          knownSignatures: warmEnough ? new Set(bySig.keys()) : new Set(),
+          deadlineMs: Date.now() + (warmEnough ? 6_000 : 18_000),
           persist: true,
         });
         for (const t of indexed.trades) {
@@ -110,17 +128,25 @@ export async function GET(
             source: t.source,
           });
         }
+        source = warmEnough ? "merged" : "chain";
         console.info("[trade-history] on-chain sync", {
           mint,
           gammPool: indexed.gammPool,
           signaturesFetched: indexed.signaturesFetched,
           swapsIndexed: indexed.swapsIndexed,
           inMemory: indexed.trades.length,
-          errors: indexed.errors.slice(0, 3),
+          ms: Date.now() - started,
         });
       } catch (e) {
         console.warn("[trade-history] on-chain sync failed", mint, e);
       }
+    } else {
+      source = "supabase";
+      console.info("[trade-history] warm supabase fast-path", {
+        mint,
+        rows: bySig.size,
+        ms: Date.now() - started,
+      });
     }
 
     const rows = [...bySig.values()].sort(
@@ -133,13 +159,13 @@ export async function GET(
       "row count:",
       page.length,
       "total:",
-      rows.length
+      rows.length,
+      "source:",
+      source,
+      "ms:",
+      Date.now() - started
     );
-    return Response.json(page, {
-      headers: {
-        "Cache-Control": "no-store",
-      },
-    });
+    return jsonPage(page, { source });
   } catch (error) {
     return Response.json(
       { error: "Failed to fetch trades", details: String(error) },
