@@ -25,18 +25,20 @@ export function formatUSD(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
-const SUBSCRIPT = "\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089";
-
-function toSubscriptDigits(n: number): string {
-  return String(Math.max(0, Math.min(99, Math.floor(n))))
-    .split("")
-    .map(c => SUBSCRIPT[Number(c)] ?? c)
-    .join("");
+/** Enough fixed decimals to show real digits — always with a decimal point, never subscript/scientific. */
+function formatFixedDecimals(value: number, minFrac = 2, maxFrac = 12): string {
+  const a = Math.abs(value);
+  if (!(a > 0)) return (0).toFixed(minFrac);
+  const digits = Math.min(
+    maxFrac,
+    Math.max(minFrac, Math.ceil(-Math.log10(a)) + 3)
+  );
+  return a.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "") || a.toFixed(minFrac);
 }
 
 /**
- * USD token price with readable decimals (pump.fun-style zero-subscript for tiny values).
- * e.g. 0.000005236 → $0.00000524 · 1.22e-7 → $0₇122
+ * USD token price with plain decimal points.
+ * e.g. 0.000002735 → $0.000002735
  */
 export function formatTokenPriceUsd(usd: number): string {
   if (!Number.isFinite(usd)) return "$—";
@@ -51,56 +53,15 @@ export function formatTokenPriceUsd(usd: number): string {
     })}`;
   }
   if (a >= 0.01) {
-    return `$${sign}${a.toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 6,
-    })}`;
+    return `$${sign}${formatFixedDecimals(a, 2, 6)}`;
   }
-  if (a >= 1e-4) {
-    // Keep fixed decimals so "$0.000005" never becomes "$0.00".
-    const s = a.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
-    return `$${sign}${s}`;
-  }
-
-  const [mantStr, expPart] = a.toExponential().split("e");
-  const exp = parseInt(expPart ?? "0", 10);
-  const zeroCount = -exp - 1;
-  if (!(zeroCount >= 3)) {
-    const s = a.toFixed(12).replace(/0+$/, "").replace(/\.$/, "");
-    return `$${sign}${s}`;
-  }
-  const sig = (mantStr ?? "0")
-    .replace(".", "")
-    .replace(/^0+/, "")
-    .replace(/0+$/, "")
-    .slice(0, 4);
-  return `$${sign}0${toSubscriptDigits(zeroCount)}${sig || "0"}`;
+  return `$${sign}${formatFixedDecimals(a, 4, 12)}`;
 }
 
-/** SOL per 1 UI token (bonding / Omnipair spot). Never scientific notation. */
+/** SOL per 1 UI token (bonding / Omnipair spot). Plain decimals only. */
 export function formatSolPerTokenPrice(solPerToken: number): string {
   if (!Number.isFinite(solPerToken) || solPerToken <= 0) return "—";
-  const a = solPerToken;
-  if (a >= 0.0001) {
-    const s = a.toFixed(10).replace(/0+$/, "").replace(/\.$/, "");
-    return `${s} SOL`;
-  }
-  if (a >= 1e-9) {
-    const s = a.toFixed(14).replace(/0+$/, "").replace(/\.$/, "");
-    return `${s} SOL`;
-  }
-  const [mantStr, expPart] = a.toExponential().split("e");
-  const exp = parseInt(expPart ?? "0", 10);
-  const zeroCount = -exp - 1;
-  if (zeroCount >= 3) {
-    const sig = (mantStr ?? "0")
-      .replace(".", "")
-      .replace(/^0+/, "")
-      .replace(/0+$/, "")
-      .slice(0, 4);
-    return `0${toSubscriptDigits(zeroCount)}${sig || "0"} SOL`;
-  }
-  return `${a.toFixed(18).replace(/0+$/, "")} SOL`;
+  return `${formatFixedDecimals(solPerToken, 4, 14)} SOL`;
 }
 
 export function shortenAddress(address: string, chars = 4): string {

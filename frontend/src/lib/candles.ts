@@ -237,24 +237,17 @@ export function tradeRowsTimeRangeMs(rows: TradePriceTick[]): {
 
 /**
  * Axis / crosshair labels for bonding-curve SOL-per-token prices (can be very small).
+ * Plain decimal points only — no scientific notation.
  */
 export function formatBondingChartPrice(price: number): string {
   if (!Number.isFinite(price)) return "—";
-  if (price === 0) return "0";
+  if (price === 0) return "0.00";
   const a = Math.abs(price);
-  if (a >= 1)
-    return price.toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 6,
-    });
-  if (a >= 1e-3)
-    return price.toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 10,
-    });
-  if (a >= 1e-9)
-    return price.toLocaleString(undefined, {
-      maximumFractionDigits: 14,
-    });
-  return price.toExponential(4);
+  const sign = price < 0 ? "-" : "";
+  const digits = Math.min(
+    14,
+    Math.max(4, Math.ceil(-Math.log10(a)) + 3)
+  );
+  const s = a.toFixed(digits).replace(/0+$/, "").replace(/\.$/, "") || a.toFixed(4);
+  return `${sign}${s}`;
 }

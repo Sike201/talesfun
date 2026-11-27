@@ -786,6 +786,8 @@ function LeveragePanel({
     initialDirection ?? "long"
   );
   const [size, setSize] = useState("");
+  /** When true, margin field tracks Max as leverage changes. */
+  const maxPinnedRef = useRef(false);
   const [loading, setLoading] = useState(false);
   /** Last opened long/short — leverage stays fixed; mark moves position value only. */
   const [openPos, setOpenPos] = useState<{
@@ -836,8 +838,8 @@ function LeveragePanel({
   const walletTokens =
     Number(tokenBalanceRaw || "0") / 10 ** Math.max(0, tokenDecimals || 6);
 
-  // Lower leverage → less (or zero) borrow → larger allowed margin.
-  // 1.0x: collateral only → ~full wallet. Higher lev: pool-depth caps margin.
+  // Max margin scales with leverage: same max notional budget ÷ leverage.
+  // 1.0x → ~full wallet; 1.2x → wallet/1.2; also clamped by pool borrow depth.
   const borrowFraction = Math.max(0, lockedLev - 1) / Math.max(lockedLev, 1);
   const effectiveCf = Math.min(borrowFraction, safeCf);
   const maxPoolBorrowSol = Math.max(0.001, reserveSol * 0.12);
@@ -846,14 +848,18 @@ function LeveragePanel({
   const poolLongCap =
     effectiveCf > 1e-8 && spot > 0
       ? maxPoolBorrowSol / (spot * effectiveCf * 0.9)
-      : Number.POSITIVE_INFINITY;
-  const maxLongMarginTokens = Math.min(walletLongCap, poolLongCap);
+      : spot > 0
+        ? (reserveSol * 0.25) / spot
+        : Number.POSITIVE_INFINITY;
+  const maxLongNotional = Math.min(walletLongCap, poolLongCap);
+  const maxLongMarginTokens = maxLongNotional / Math.max(lockedLev, 1);
   const walletShortCap = Math.max(0, walletSol - 0.02);
   const poolShortCap =
     effectiveCf > 1e-8
       ? maxPoolBorrowSol / (effectiveCf * 0.85)
-      : Number.POSITIVE_INFINITY;
-  const maxShortMarginSol = Math.min(walletShortCap, poolShortCap);
+      : reserveSol * 0.25;
+  const maxShortNotional = Math.min(walletShortCap, poolShortCap);
+  const maxShortMarginSol = maxShortNotional / Math.max(lockedLev, 1);
   const maxMargin =
     direction === "short" ? maxShortMarginSol : maxLongMarginTokens;
 
@@ -865,19 +871,19 @@ function LeveragePanel({
     setLeverage(prev => clampLeverage(prev, maxLev));
   }, [maxLev]);
 
-  // If leverage rises and current margin exceeds the new Max, clamp the input.
+  // When Max is pinned (or size exceeds new Max), keep the field on the levered Max.
   useEffect(() => {
+    if (!Number.isFinite(maxMargin) || !(maxMargin > 0)) return;
     const n = parseFloat(size);
-    if (!(n > 0) || !Number.isFinite(maxMargin)) return;
-    if (n > maxMargin + 1e-12) {
-      setSize(
-        String(
-          Number(maxMargin >= 1000 ? maxMargin.toFixed(0) : maxMargin.toPrecision(6))
-        )
-      );
+    const next =
+      maxMargin >= 1000
+        ? String(Math.floor(maxMargin))
+        : String(Number(maxMargin.toPrecision(6)));
+    if (maxPinnedRef.current || (n > 0 && n > maxMargin + 1e-12)) {
+      if (size !== next) setSize(next);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp when caps move
-  }, [maxMargin, direction]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync when caps / lev move
+  }, [maxMargin, direction, lockedLev]);
 
   useEffect(() => {
     if (!walletAdapter.publicKey) return;
@@ -1065,17 +1071,14 @@ function LeveragePanel({
             <button
               type="button"
               className="text-[10px] font-semibold tabular-nums text-white/50 hover:text-white"
-              onClick={() =>
+              onClick={() => {
+                maxPinnedRef.current = true;
                 setSize(
-                  String(
-                    Number(
-                      maxMargin >= 1000
-                        ? maxMargin.toFixed(0)
-                        : maxMargin.toPrecision(6)
-                    )
-                  )
-                )
-              }
+                  maxMargin >= 1000
+                    ? String(Math.floor(maxMargin))
+                    : String(Number(maxMargin.toPrecision(6)))
+                );
+              }}
             >
               Max{" "}
               {maxMargin >= 1000
@@ -1088,7 +1091,10 @@ function LeveragePanel({
         <input
           type="number"
           value={size}
-          onChange={e => setSize(e.target.value)}
+          onChange={e => {
+            maxPinnedRef.current = false;
+            setSize(e.target.value);
+          }}
           placeholder="0"
           className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
         />
