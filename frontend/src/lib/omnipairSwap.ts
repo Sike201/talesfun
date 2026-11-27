@@ -20,6 +20,7 @@ import {
   createCloseAccountInstruction,
   createInitializeAccount3Instruction,
   createSyncNativeInstruction,
+  createTransferInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { IDL as OmnipairIdl } from "@omnipair/program-interface";
@@ -35,6 +36,11 @@ import {
   type FetchOmnipairPoolSnapshotResult,
   type OmnipairPoolSnapshot,
 } from "./omnipairPoolState";
+import {
+  buildPlatformFeeTransferIx,
+  platformFeeRecipient,
+  PLATFORM_FEE_BPS,
+} from "./platformFee";
 import { priceSolFromRawDecimals } from "./utils";
 
 const CU_SWAP = 600_000;
@@ -503,9 +509,14 @@ export async function sendOmnipairSwapTx(
   let amountIn: bigint;
   let minAmountOut: bigint;
 
+  // Platform overlay (30 bps) — buy: skim SOL before wrap; sell: skim WSOL after swap.
+  const platformFeeBuy = side === "buy" ? buildPlatformFeeTransferIx({ from: owner, solUi: amountUi }) : null;
+  const buyFeeLamports = platformFeeBuy?.feeLamports ?? BigInt(0);
+
   if (side === "buy") {
-    amountIn = BigInt(Math.floor(amountUi * 1e9));
-    if (amountIn <= BigInt(0)) throw new Error("SOL amount too small");
+    const grossIn = BigInt(Math.floor(amountUi * 1e9));
+    amountIn = grossIn > buyFeeLamports ? grossIn - buyFeeLamports : BigInt(0);
+    if (amountIn <= BigInt(0)) throw new Error("SOL amount too small after platform fee");
 
     const freshBuy = await fetchOmnipairPoolSnapshot(
       connection,
@@ -610,6 +621,15 @@ export async function sendOmnipairSwapTx(
     ComputeBudgetProgram.setComputeUnitLimit({ units: CU_SWAP }),
   ];
   const extraSigners: Keypair[] = [];
+
+  if (platformFeeBuy) {
+    ixs.push(platformFeeBuy.ix);
+    console.info("[platform-fee] buy skim", {
+      bps: PLATFORM_FEE_BPS,
+      feeLamports: platformFeeBuy.feeLamports.toString(),
+      netSwapLamports: amountIn.toString(),
+    });
+  }
 
   if (tempWsolKp) {
     console.warn(
@@ -716,6 +736,48 @@ export async function sendOmnipairSwapTx(
     .instruction();
 
   ixs.push(swapIx);
+
+  // Sell overlay: skim 30 bps of SOL notional from WSOL proceeds → treasury.
+  if (side === "sell") {
+    const treasury = platformFeeRecipient();
+    const sellNotionalSol = amountUi * spot;
+    let feeLamports =
+      (BigInt(Math.floor(sellNotionalSol * 1e9)) * BigInt(PLATFORM_FEE_BPS)) /
+      BigInt(10_000);
+    // Cap fee so a failed/tiny fill can't drain the ATA.
+    const feeCap = minAmountOut / BigInt(2);
+    if (feeLamports > feeCap) feeLamports = feeCap;
+    if (treasury && feeLamports > BigInt(0) && !treasury.equals(owner)) {
+      const treasuryWsol = getAssociatedTokenAddressSync(
+        NATIVE_MINT,
+        treasury,
+        false,
+        TOKEN_PROGRAM_ID
+      );
+      ixs.push(
+        createAssociatedTokenAccountIdempotentInstruction(
+          owner,
+          treasuryWsol,
+          treasury,
+          NATIVE_MINT,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        ),
+        createTransferInstruction(
+          userWsolAccount,
+          treasuryWsol,
+          owner,
+          feeLamports,
+          [],
+          TOKEN_PROGRAM_ID
+        )
+      );
+      console.info("[platform-fee] sell skim (WSOL)", {
+        bps: PLATFORM_FEE_BPS,
+        feeLamports: feeLamports.toString(),
+      });
+    }
+  }
 
   // Ephemeral WSOL → unwrap native SOL back to the wallet after the swap.
   if (tempWsolKp) {

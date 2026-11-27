@@ -30,6 +30,7 @@ import {
   markPositionValueUsd,
   upsertOpenPosition,
 } from "@/lib/openPositions";
+import { PLATFORM_FEE_PCT_LABEL } from "@/lib/platformFee";
 
 type Mode = "swap" | "leverage" | "borrow";
 
@@ -835,7 +836,11 @@ function SwapPanel({
 
       <div className="space-y-0 px-0.5 py-0.5">
         <TalesTradeDetailsRow label="Rate" value={rateLabel} />
-        <TalesTradeDetailsRow label="Swap fee" value="0.30%" />
+        <TalesTradeDetailsRow label="Pool fee" value="0.30%" />
+        <TalesTradeDetailsRow
+          label="Platform fee"
+          value={PLATFORM_FEE_PCT_LABEL}
+        />
         <div className="flex items-center justify-between gap-3 py-1">
           <span className="text-[11px] text-white/40">Max slippage</span>
           <SlippageButton value={slippage} onChange={setSlippage} />
@@ -1042,6 +1047,7 @@ function LeveragePanel({
         upsertOpenPosition({
           mint: token.mint,
           wallet: walletAdapter.publicKey.toBase58(),
+          kind: "trade",
           direction,
           leverage: levUsed,
           marginUi: margin,
@@ -1410,6 +1416,18 @@ function BorrowPanel({
       );
       console.info("[borrow]", { collateralSig, borrowSig, ltvPct, borrowSol });
       if (walletAdapter.publicKey) {
+        upsertOpenPosition({
+          mint: token.mint,
+          wallet: walletAdapter.publicKey.toBase58(),
+          kind: "loan",
+          direction: "long",
+          leverage: 0,
+          marginUi: coll,
+          entrySpotSol: spot,
+          entrySolUsd: usd,
+          signature: borrowSig,
+          borrowSolUi: borrowSol,
+        });
         void persistLaunchpadTrade({
           mint: token.mint,
           signature: borrowSig,

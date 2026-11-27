@@ -33,6 +33,7 @@ import {
 import type { OmnipairPoolSnapshot } from "./omnipairPoolState";
 import { sendOmnipairSwapTx } from "./omnipairSwap";
 import { clampLeverage, poolSafeCf } from "./poolMaxLeverage";
+import { buildPlatformFeeTransferIx, PLATFORM_FEE_BPS } from "./platformFee";
 
 const CU = 900_000;
 
@@ -129,6 +130,17 @@ export async function sendOmnipairAddCollateralTx(params: {
 
   const ixs = [];
   if (collateralMint.equals(NATIVE_MINT)) {
+    const fee = buildPlatformFeeTransferIx({
+      from: owner,
+      solUi: Number(amountRaw) / 1e9,
+    });
+    if (fee) {
+      ixs.push(fee.ix);
+      console.info("[platform-fee] add_collateral SOL skim", {
+        bps: PLATFORM_FEE_BPS,
+        feeLamports: fee.feeLamports.toString(),
+      });
+    }
     ixs.push(
       createAssociatedTokenAccountIdempotentInstruction(
         owner,
@@ -145,8 +157,24 @@ export async function sendOmnipairAddCollateralTx(params: {
       }),
       createSyncNativeInstruction(userAta)
     );
-  } else if (!(await connection.getAccountInfo(userAta, "confirmed"))) {
-    throw new Error("No token balance to post as collateral");
+  } else {
+    if (!(await connection.getAccountInfo(userAta, "confirmed"))) {
+      throw new Error("No token balance to post as collateral");
+    }
+    // Token collateral: skim fee in SOL ≈ token amount × spot.
+    const tokenUi =
+      Number(amountRaw) / 10 ** snapshot.projectTokenDecimals;
+    const notionalSol =
+      snapshot.spotPriceSol > 0 ? tokenUi * snapshot.spotPriceSol : 0;
+    const fee = buildPlatformFeeTransferIx({ from: owner, solUi: notionalSol });
+    if (fee) {
+      ixs.push(fee.ix);
+      console.info("[platform-fee] add_collateral token skim (SOL)", {
+        bps: PLATFORM_FEE_BPS,
+        feeLamports: fee.feeLamports.toString(),
+        notionalSol,
+      });
+    }
   }
 
   const ix = await program.methods
@@ -215,6 +243,21 @@ export async function sendOmnipairBorrowTx(params: {
       ASSOCIATED_TOKEN_PROGRAM_ID
     ),
   ];
+
+  // Platform overlay on SOL borrows (taken from wallet, not from borrowed WSOL).
+  if (borrowMint.equals(NATIVE_MINT)) {
+    const fee = buildPlatformFeeTransferIx({
+      from: owner,
+      solUi: Number(amountRaw) / 1e9,
+    });
+    if (fee) {
+      ixs.push(fee.ix);
+      console.info("[platform-fee] borrow SOL skim", {
+        bps: PLATFORM_FEE_BPS,
+        feeLamports: fee.feeLamports.toString(),
+      });
+    }
+  }
 
   const ix = await program.methods
     .borrow({ amount: new BN(amountRaw.toString()) })

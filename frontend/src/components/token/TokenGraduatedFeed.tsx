@@ -149,6 +149,8 @@ export default function TokenGraduatedFeed({
         ) : section === "positions" ? (
           <TokenPositionsList
             mint={token.mint}
+            ticker={token.ticker}
+            trades={trades}
             spotSol={spotSol}
             solUsd={solUsd}
             connectedWallet={walletKey}

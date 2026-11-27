@@ -1,12 +1,16 @@
 /**
- * Client-side open leverage positions (long/short) for Positions tab + panel.
+ * Client-side open leverage / borrow positions for Positions tab + panel.
  * Persists per mint so the Positions feed stays visible after refresh.
  */
+
+export type OpenPositionKind = "trade" | "loan";
 
 export type OpenLeveragePosition = {
   id: string;
   mint: string;
   wallet: string;
+  /** trade = leverage long/short; loan = borrow against collateral */
+  kind: OpenPositionKind;
   direction: "long" | "short";
   leverage: number;
   marginUi: number;
@@ -14,6 +18,8 @@ export type OpenLeveragePosition = {
   entrySolUsd: number;
   signature: string;
   openedAt: string;
+  /** Borrow size in SOL (loans) */
+  borrowSolUi?: number;
 };
 
 const STORAGE_KEY = "higher:open-positions:v1";
@@ -24,7 +30,11 @@ function readAll(): OpenLeveragePosition[] {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as OpenLeveragePosition[];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(p => ({
+      ...p,
+      kind: p.kind === "loan" ? "loan" : "trade",
+    }));
   } catch {
     return [];
   }
@@ -46,15 +56,19 @@ export function listOpenPositions(mint?: string): OpenLeveragePosition[] {
 }
 
 export function upsertOpenPosition(
-  pos: Omit<OpenLeveragePosition, "id" | "openedAt"> & {
+  pos: Omit<OpenLeveragePosition, "id" | "openedAt" | "kind"> & {
     id?: string;
     openedAt?: string;
+    kind?: OpenPositionKind;
+    borrowSolUi?: number;
   }
 ): OpenLeveragePosition {
+  const kind: OpenPositionKind = pos.kind ?? "trade";
   const row: OpenLeveragePosition = {
     id: pos.id ?? `${pos.signature || Date.now()}`,
     mint: pos.mint,
     wallet: pos.wallet,
+    kind,
     direction: pos.direction,
     leverage: pos.leverage,
     marginUi: pos.marginUi,
@@ -62,9 +76,16 @@ export function upsertOpenPosition(
     entrySolUsd: pos.entrySolUsd,
     signature: pos.signature,
     openedAt: pos.openedAt ?? new Date().toISOString(),
+    borrowSolUi: pos.borrowSolUi,
   };
   const rest = readAll().filter(
-    p => !(p.mint === row.mint && p.wallet === row.wallet && p.direction === row.direction)
+    p =>
+      !(
+        p.mint === row.mint &&
+        p.wallet === row.wallet &&
+        p.direction === row.direction &&
+        (p.kind ?? "trade") === kind
+      )
   );
   writeAll([row, ...rest]);
   if (typeof window !== "undefined") {
