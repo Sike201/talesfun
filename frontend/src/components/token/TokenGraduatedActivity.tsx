@@ -94,11 +94,6 @@ export default function TokenGraduatedActivity({
                       )}
                     >
                       {activityLabel(trade)}
-                      {trade.source === "omnipair" ? (
-                        <span className="ml-1 text-[10px] font-medium text-white/35">
-                          · Dusk
-                        </span>
-                      ) : null}
                     </span>
                   </span>
                   <span className="font-medium tabular-nums text-white/85">

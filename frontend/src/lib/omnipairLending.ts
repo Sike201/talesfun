@@ -509,3 +509,482 @@ export async function sendOmnipairLeverageStepTx(params: {
 
   return { sigs };
 }
+
+const U64_MAX = new BN("18446744073709551615");
+
+export type OmnipairUserPositionView = {
+  position: PublicKey;
+  collateral0: bigint;
+  collateral1: bigint;
+  debt0Shares: bigint;
+  debt1Shares: bigint;
+  debt0Raw: bigint;
+  debt1Raw: bigint;
+  token0: PublicKey;
+  token1: PublicKey;
+};
+
+function sharesToDebt(shares: BN, totalDebt: BN, totalShares: BN): bigint {
+  if (shares.isZero() || totalShares.isZero()) return BigInt(0);
+  return BigInt(shares.mul(totalDebt).div(totalShares).toString());
+}
+
+/** Read on-chain user position + debt amounts (from pair share math). */
+export async function fetchOmnipairUserPosition(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  owner?: PublicKey;
+}): Promise<OmnipairUserPositionView | null> {
+  const { connection, wallet, snapshot } = params;
+  const owner = params.owner ?? wallet.publicKey;
+  if (!owner) return null;
+  const pairPk = snapshot.pair;
+  const [position] = deriveOmnipairUserPosition(pairPk, owner);
+  const info = await connection.getAccountInfo(position, "confirmed");
+  if (!info) return null;
+
+  const program = getProgram(connection, wallet);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pos = await (program.account as any).userPosition.fetch(position);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pair = await (program.account as any).pair.fetch(pairPk);
+
+  const debt0Shares = BigInt((pos.debt0Shares as BN).toString());
+  const debt1Shares = BigInt((pos.debt1Shares as BN).toString());
+  return {
+    position,
+    collateral0: BigInt((pos.collateral0 as BN).toString()),
+    collateral1: BigInt((pos.collateral1 as BN).toString()),
+    debt0Shares,
+    debt1Shares,
+    debt0Raw: sharesToDebt(
+      pos.debt0Shares as BN,
+      pair.totalDebt0 as BN,
+      pair.totalDebt0Shares as BN
+    ),
+    debt1Raw: sharesToDebt(
+      pos.debt1Shares as BN,
+      pair.totalDebt1 as BN,
+      pair.totalDebt1Shares as BN
+    ),
+    token0: pair.token0 as PublicKey,
+    token1: pair.token1 as PublicKey,
+  };
+}
+
+/**
+ * Repay borrowed tokens. Pass `amountRaw = u64::MAX` (via repayAll) to clear the side.
+ */
+export async function sendOmnipairRepayTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  repayMint: PublicKey;
+  /** Raw token amount; omit / use repayAll for full repay */
+  amountRaw?: bigint;
+  repayAll?: boolean;
+}): Promise<string> {
+  const { connection, wallet, snapshot, repayMint } = params;
+  const owner = wallet.publicKey;
+  if (!owner) throw new Error("Wallet not connected");
+  const amountBn = params.repayAll
+    ? U64_MAX
+    : new BN((params.amountRaw ?? BigInt(0)).toString());
+  if (!params.repayAll && amountBn.lten(0)) throw new Error("Repay amount too small");
+
+  const pairPk = snapshot.pair;
+  const program = getProgram(connection, wallet);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pairAcct = await (program.account as any).pair.fetch(pairPk);
+  const rateModel = pairAcct.rateModel as PublicKey;
+  const [userPosition] = deriveOmnipairUserPosition(pairPk, owner);
+  const [reserveVault] = deriveOmnipairReserveVault(pairPk, repayMint);
+  const [futarchyAuthority] = deriveOmnipairFutarchyAuthority();
+  const eventAuthority = omnipairEventAuthorityPda();
+  const tokenProgram = await mintTokenProgram(connection, repayMint);
+  const userAta = getAssociatedTokenAddressSync(
+    repayMint,
+    owner,
+    false,
+    tokenProgram
+  );
+
+  const ixs = [
+    createAssociatedTokenAccountIdempotentInstruction(
+      owner,
+      userAta,
+      owner,
+      repayMint,
+      tokenProgram,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    ),
+  ];
+
+  // Ensure WSOL ATA has enough for repay-all (program checks ATA balance).
+  if (repayMint.equals(NATIVE_MINT)) {
+    const pos = await fetchOmnipairUserPosition({ connection, wallet, snapshot });
+    let need = params.repayAll
+      ? pos
+        ? repayMint.equals(pos.token0)
+          ? pos.debt0Raw
+          : pos.debt1Raw
+        : BigInt(0)
+      : (params.amountRaw ?? BigInt(0));
+    // Small buffer for interest between fetch and execution.
+    need = (need * BigInt(1005)) / BigInt(1000) + BigInt(1000);
+    const bal = await connection.getTokenAccountBalance(userAta).catch(() => null);
+    const have = BigInt(bal?.value.amount ?? "0");
+    if (have < need) {
+      const topUp = need - have;
+      ixs.push(
+        SystemProgram.transfer({
+          fromPubkey: owner,
+          toPubkey: userAta,
+          lamports: Number(topUp),
+        }),
+        createSyncNativeInstruction(userAta)
+      );
+    }
+  }
+
+  const ix = await program.methods
+    .repay({ amount: amountBn })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .accounts({
+      pair: pairPk,
+      userPosition,
+      rateModel,
+      futarchyAuthority,
+      reserveVault,
+      userReserveTokenAccount: userAta,
+      reserveTokenMint: repayMint,
+      user: owner,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      token2022Program: TOKEN_2022_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      eventAuthority,
+      program: OMNIPAIR_PROGRAM_ID,
+    } as any)
+    .instruction();
+  ixs.push(ix);
+
+  if (repayMint.equals(NATIVE_MINT)) {
+    ixs.push(
+      createCloseAccountInstruction(userAta, owner, owner, [], TOKEN_PROGRAM_ID)
+    );
+  }
+
+  return sendTx(connection, wallet, ixs, "repay");
+}
+
+/** Withdraw collateral. `u64::MAX` only when debt is fully repaid. */
+export async function sendOmnipairRemoveCollateralTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  collateralMint: PublicKey;
+  amountRaw?: bigint;
+  removeAll?: boolean;
+}): Promise<string> {
+  const { connection, wallet, snapshot, collateralMint } = params;
+  const owner = wallet.publicKey;
+  if (!owner) throw new Error("Wallet not connected");
+  const amountBn = params.removeAll
+    ? U64_MAX
+    : new BN((params.amountRaw ?? BigInt(0)).toString());
+  if (!params.removeAll && amountBn.lten(0)) {
+    throw new Error("Withdraw amount too small");
+  }
+
+  const pairPk = snapshot.pair;
+  const program = getProgram(connection, wallet);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pairAcct = await (program.account as any).pair.fetch(pairPk);
+  const rateModel = pairAcct.rateModel as PublicKey;
+  const [userPosition] = deriveOmnipairUserPosition(pairPk, owner);
+  const [collateralVault] = deriveOmnipairCollateralVault(pairPk, collateralMint);
+  const [futarchyAuthority] = deriveOmnipairFutarchyAuthority();
+  const eventAuthority = omnipairEventAuthorityPda();
+  const tokenProgram = await mintTokenProgram(connection, collateralMint);
+  const userAta = getAssociatedTokenAddressSync(
+    collateralMint,
+    owner,
+    false,
+    tokenProgram
+  );
+
+  const ixs = [
+    createAssociatedTokenAccountIdempotentInstruction(
+      owner,
+      userAta,
+      owner,
+      collateralMint,
+      tokenProgram,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    ),
+  ];
+
+  const ix = await program.methods
+    .removeCollateral({ amount: amountBn })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .accounts({
+      pair: pairPk,
+      userPosition,
+      rateModel,
+      futarchyAuthority,
+      collateralVault,
+      userCollateralTokenAccount: userAta,
+      collateralTokenMint: collateralMint,
+      user: owner,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      token2022Program: TOKEN_2022_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      eventAuthority,
+      program: OMNIPAIR_PROGRAM_ID,
+    } as any)
+    .instruction();
+  ixs.push(ix);
+
+  if (collateralMint.equals(NATIVE_MINT)) {
+    ixs.push(
+      createCloseAccountInstruction(userAta, owner, owner, [], TOKEN_PROGRAM_ID)
+    );
+  }
+
+  return sendTx(connection, wallet, ixs, "remove_collateral");
+}
+
+/**
+ * Close like beta.omnipair.fi: cover debt (buy/sell if needed) → repay all → withdraw all collateral.
+ * Long / borrow (project coll, SOL debt): sell tokens → repay SOL → remove project coll.
+ * Short (SOL coll, project debt): buy tokens → repay project → remove SOL coll.
+ */
+export async function sendOmnipairClosePositionTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  /** Hint for which unwind path; inferred from on-chain debt if omitted */
+  direction?: "long" | "short" | "borrow";
+  slippagePercent?: number;
+}): Promise<{ sigs: string[] }> {
+  const {
+    connection,
+    wallet,
+    snapshot,
+    slippagePercent = 8,
+  } = params;
+  const owner = wallet.publicKey;
+  if (!owner) throw new Error("Wallet not connected");
+
+  const pos = await fetchOmnipairUserPosition({ connection, wallet, snapshot });
+  if (!pos) throw new Error("No on-chain position to close");
+
+  const sigs: string[] = [];
+  const projectIs0 = pos.token0.equals(snapshot.projectMint);
+  const debtSol = NATIVE_MINT.equals(pos.token0) ? pos.debt0Raw : pos.debt1Raw;
+  const debtProject = projectIs0 ? pos.debt0Raw : pos.debt1Raw;
+  const collSol = NATIVE_MINT.equals(pos.token0)
+    ? pos.collateral0
+    : pos.collateral1;
+  const collProject = projectIs0 ? pos.collateral0 : pos.collateral1;
+
+  // Infer direction from debt side when not provided.
+  const direction =
+    params.direction ??
+    (debtProject > BigInt(0)
+      ? "short"
+      : debtSol > BigInt(0)
+        ? "long"
+        : collSol > BigInt(0)
+          ? "short"
+          : "long");
+
+  if (direction === "short" && debtProject > BigInt(0)) {
+    const needUi =
+      (Number(debtProject) / 10 ** snapshot.projectTokenDecimals) * 1.02;
+    const tokenProgram = await mintTokenProgram(connection, snapshot.projectMint);
+    const ata = getAssociatedTokenAddressSync(
+      snapshot.projectMint,
+      owner,
+      false,
+      tokenProgram
+    );
+    const bal = await connection.getTokenAccountBalance(ata).catch(() => null);
+    const haveUi = Number(bal?.value.uiAmountString ?? "0");
+    if (haveUi + 1e-12 < needUi) {
+      const buySol =
+        ((needUi - haveUi) * snapshot.spotPriceSol) / 0.85;
+      const swap = await sendOmnipairSwapTx({
+        connection,
+        wallet,
+        snapshot,
+        side: "buy",
+        amountUi: Math.max(buySol, 0.001),
+        slippagePercent: Math.max(slippagePercent, 12),
+      });
+      sigs.push(swap.signature);
+    }
+    sigs.push(
+      await sendOmnipairRepayTx({
+        connection,
+        wallet,
+        snapshot,
+        repayMint: snapshot.projectMint,
+        repayAll: true,
+      })
+    );
+  } else if (debtSol > BigInt(0)) {
+    // Long / borrow: may need to sell project tokens for SOL to repay.
+    const needSol = (Number(debtSol) / 1e9) * 1.02;
+    const solLamports = await connection.getBalance(owner, "confirmed");
+    const haveSol = solLamports / 1e9;
+    // Keep ~0.02 SOL for fees.
+    if (haveSol < needSol + 0.02) {
+      const shortfall = needSol + 0.02 - haveSol;
+      const sellUi =
+        snapshot.spotPriceSol > 0
+          ? (shortfall / snapshot.spotPriceSol) * 1.15
+          : 0;
+      if (sellUi > 0) {
+        const tokenProgram = await mintTokenProgram(
+          connection,
+          snapshot.projectMint
+        );
+        const ata = getAssociatedTokenAddressSync(
+          snapshot.projectMint,
+          owner,
+          false,
+          tokenProgram
+        );
+        const bal = await connection.getTokenAccountBalance(ata).catch(() => null);
+        const haveTok = Number(bal?.value.uiAmountString ?? "0");
+        const attempt = Math.min(sellUi, haveTok * 0.95);
+        if (attempt > 0) {
+          let lastErr: unknown;
+          let ui = attempt;
+          for (let i = 0; i < 5; i++) {
+            try {
+              const swap = await sendOmnipairSwapTx({
+                connection,
+                wallet,
+                snapshot,
+                side: "sell",
+                amountUi: ui,
+                slippagePercent: Math.max(slippagePercent, 15) + i * 5,
+              });
+              sigs.push(swap.signature);
+              lastErr = undefined;
+              break;
+            } catch (e) {
+              lastErr = e;
+              const msg = e instanceof Error ? e.message : String(e);
+              if (!/0x1781|6017|SlippageExceeded/i.test(msg)) throw e;
+              ui *= 0.55;
+            }
+          }
+          if (lastErr) {
+            throw lastErr instanceof Error
+              ? lastErr
+              : new Error("Close unwind sell failed");
+          }
+        }
+      }
+    }
+    sigs.push(
+      await sendOmnipairRepayTx({
+        connection,
+        wallet,
+        snapshot,
+        repayMint: NATIVE_MINT,
+        repayAll: true,
+      })
+    );
+  }
+
+  // After debt cleared, withdraw all collateral sides that remain.
+  const refreshed = await fetchOmnipairUserPosition({
+    connection,
+    wallet,
+    snapshot,
+  });
+  if (refreshed) {
+    const stillDebt =
+      refreshed.debt0Raw > BigInt(0) || refreshed.debt1Raw > BigInt(0);
+    if (stillDebt) {
+      throw new Error("Debt remains after repay — cannot withdraw collateral");
+    }
+    if (refreshed.collateral0 > BigInt(0)) {
+      sigs.push(
+        await sendOmnipairRemoveCollateralTx({
+          connection,
+          wallet,
+          snapshot,
+          collateralMint: refreshed.token0,
+          removeAll: true,
+        })
+      );
+    }
+    if (refreshed.collateral1 > BigInt(0)) {
+      sigs.push(
+        await sendOmnipairRemoveCollateralTx({
+          connection,
+          wallet,
+          snapshot,
+          collateralMint: refreshed.token1,
+          removeAll: true,
+        })
+      );
+    }
+  }
+
+  return { sigs };
+}
+
+/**
+ * Partial adjust: repay some debt and/or withdraw some collateral (explicit amounts).
+ */
+export async function sendOmnipairAdjustPositionTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  repayMint?: PublicKey;
+  repayAmountRaw?: bigint;
+  repayAll?: boolean;
+  removeCollateralMint?: PublicKey;
+  removeAmountRaw?: bigint;
+  removeAll?: boolean;
+}): Promise<{ sigs: string[] }> {
+  const { connection, wallet, snapshot } = params;
+  const sigs: string[] = [];
+  if (params.repayMint && (params.repayAll || (params.repayAmountRaw ?? BigInt(0)) > BigInt(0))) {
+    sigs.push(
+      await sendOmnipairRepayTx({
+        connection,
+        wallet,
+        snapshot,
+        repayMint: params.repayMint,
+        amountRaw: params.repayAmountRaw,
+        repayAll: params.repayAll,
+      })
+    );
+  }
+  if (
+    params.removeCollateralMint &&
+    (params.removeAll || (params.removeAmountRaw ?? BigInt(0)) > BigInt(0))
+  ) {
+    sigs.push(
+      await sendOmnipairRemoveCollateralTx({
+        connection,
+        wallet,
+        snapshot,
+        collateralMint: params.removeCollateralMint,
+        amountRaw: params.removeAmountRaw,
+        removeAll: params.removeAll,
+      })
+    );
+  }
+  if (!sigs.length) throw new Error("Nothing to adjust");
+  return { sigs };
+}
+

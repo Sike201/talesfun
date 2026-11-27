@@ -136,6 +136,7 @@ export default function TokenGraduatedFeed({
             spotSol={spotSol}
             solUsd={solUsd}
             connectedWallet={publicKey?.toBase58() ?? null}
+            omnipairPoolSnapshot={omnipairPoolSnapshot}
           />
         ) : (
           <TokenHoldersList

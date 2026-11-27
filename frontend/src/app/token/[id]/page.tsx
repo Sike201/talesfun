@@ -785,7 +785,11 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
                 ) : omnipairSpotLive ? (
                   <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-white/55">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/omnipair/trade.png" alt="" className="h-3 w-3 rounded-[2px]" />
+                    <img
+                      src="/icons/omnipair/favicon.svg"
+                      alt=""
+                      className="h-3.5 w-3.5"
+                    />
                     Omnipair
                   </span>
                 ) : (
@@ -897,7 +901,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
               <div className="rounded-xl bg-white/[0.04] px-3 py-3 text-xs leading-relaxed text-white/55">
                 <p className="mb-1 font-semibold text-white/90">Omnipair market not open yet</p>
                 <p className="mb-2">
-                  The curve is finished. Opening the market releases the reserves, creates the Dusk pool, and seeds it. The wallet pays about 0.2 SOL plus rent.
+                  The curve is finished. Opening the market releases the reserves, creates the Omnipair pool, and seeds it. The wallet pays about 0.2 SOL plus rent.
                 </p>
                 <button
                   type="button"

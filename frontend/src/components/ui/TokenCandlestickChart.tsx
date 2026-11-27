@@ -141,8 +141,23 @@ export default function TokenCandlestickChart({
   }, []);
 
   const pushCandlesToSeries = useCallback((usd: boolean, rate: number) => {
-    const raw = candlesSolRef.current;
-    if (!raw.length) return;
+    const raw = candlesSolRef.current.filter(
+      c =>
+        Number.isFinite(c.time) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close) &&
+        c.open > 0 &&
+        c.close > 0
+    );
+    if (!raw.length) {
+      candleRef.current?.setData([]);
+      areaRef.current?.setData([]);
+      setLastClose(null);
+      setChangePct(null);
+      return;
+    }
     const scale = (v: number) => (Number.isFinite(v) ? v * rate : v);
     const first = raw[0]!;
     const last = raw[raw.length - 1]!;
@@ -155,13 +170,23 @@ export default function TokenCandlestickChart({
 
     if (visualRef.current === "candles" && candleRef.current) {
       candleRef.current.setData(
-        raw.map(({ time, open, high, low, close }) => ({
-          time: time as UTCTimestamp,
-          open: usd ? scale(open) : open,
-          high: usd ? scale(high) : high,
-          low: usd ? scale(low) : low,
-          close: usd ? scale(close) : close,
-        }))
+        raw.map(({ time, open, high, low, close }) => {
+          const o = usd ? scale(open) : open;
+          const c = usd ? scale(close) : close;
+          let h = usd ? scale(high) : high;
+          let l = usd ? scale(low) : low;
+          // Keep OHLC consistent so lightweight-charts doesn't drop bars.
+          h = Math.max(h, o, c);
+          l = Math.min(l, o, c);
+          if (!(l > 0)) l = Math.min(o, c);
+          return {
+            time: time as UTCTimestamp,
+            open: o,
+            high: h,
+            low: l,
+            close: c,
+          };
+        })
       );
     } else if (areaRef.current) {
       areaRef.current.setData(
