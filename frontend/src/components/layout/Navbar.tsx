@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { cn, shortenAddress } from "@/lib/utils";
+import { cn, isSolanaAddress, shortenAddress } from "@/lib/utils";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { LogOut, Copy, CheckCheck, Search, Wallet } from "lucide-react";
 
@@ -58,13 +58,17 @@ export default function Navbar() {
 
   const pushSearch = useCallback(
     (value: string) => {
+      const trimmed = value.trim();
+      // Full mint / wallet pubkey → open the token page directly.
+      if (trimmed && isSolanaAddress(trimmed)) {
+        router.push(`/token/${trimmed}`);
+        return;
+      }
       if (pathname === "/" || pathname === "/launches") {
-        const next = value.trim()
-          ? `/?q=${encodeURIComponent(value.trim())}`
-          : "/";
+        const next = trimmed ? `/?q=${encodeURIComponent(trimmed)}` : "/";
         router.replace(next, { scroll: false });
-      } else if (value.trim()) {
-        router.push(`/?q=${encodeURIComponent(value.trim())}`);
+      } else if (trimmed) {
+        router.push(`/?q=${encodeURIComponent(trimmed)}`);
       }
     },
     [pathname, router]

@@ -5,7 +5,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { Search, Bell } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { shortenAddress } from "@/lib/utils";
+import { isSolanaAddress, shortenAddress } from "@/lib/utils";
 
 export default function TopBar() {
   const { connected, publicKey } = useWallet();
@@ -14,9 +14,13 @@ export default function TopBar() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (searchQuery.trim()) {
-      router.push(`/launches?q=${encodeURIComponent(searchQuery)}`);
+    const trimmed = searchQuery.trim();
+    if (!trimmed) return;
+    if (isSolanaAddress(trimmed)) {
+      router.push(`/token/${trimmed}`);
+      return;
     }
+    router.push(`/?q=${encodeURIComponent(trimmed)}`);
   };
 
   return (

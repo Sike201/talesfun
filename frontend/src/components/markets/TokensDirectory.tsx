@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { LayoutGroup, motion } from "framer-motion";
-import { cn } from "@/lib/utils";
+import { cn, isSolanaAddress } from "@/lib/utils";
 import {
   type DirectoryTab,
   useTokensDirectory,
@@ -29,6 +29,7 @@ const positionSpring = {
 };
 
 export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const queryParam = searchParams.get("q") ?? initialQuery;
   const [tab, setTab] = useState<DirectoryTab>("trending");
@@ -43,6 +44,13 @@ export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [tab, queryParam]);
+
+  // Pasted mint in `?q=` → jump straight to the token page (even if not in the grid yet).
+  useEffect(() => {
+    const q = queryParam.trim();
+    if (!q || !isSolanaAddress(q)) return;
+    router.replace(`/token/${q}`);
+  }, [queryParam, router]);
 
   const topTokens = useMemo(
     () => sortedTrending.slice(0, 4),

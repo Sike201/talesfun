@@ -205,37 +205,55 @@ export function useTokensDirectory() {
 
   function filterByTab(tab: DirectoryTab, query: string): Token[] {
     const q = query.trim().toLowerCase();
-    let list: Token[];
+    // Search is global: name / ticker / mint (partial), not limited to the active tab.
+    if (q) {
+      const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
+      const matched = list.filter(
+        t =>
+          t.name.toLowerCase().includes(q) ||
+          t.ticker.toLowerCase().includes(q) ||
+          t.mint.toLowerCase().includes(q)
+      );
+      matched.sort((a, b) => {
+        const aExact = a.mint.toLowerCase() === q ? 1 : 0;
+        const bExact = b.mint.toLowerCase() === q ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+        const aPref =
+          a.mint.toLowerCase().startsWith(q) ||
+          a.ticker.toLowerCase().startsWith(q) ||
+          a.name.toLowerCase().startsWith(q)
+            ? 1
+            : 0;
+        const bPref =
+          b.mint.toLowerCase().startsWith(q) ||
+          b.ticker.toLowerCase().startsWith(q) ||
+          b.name.toLowerCase().startsWith(q)
+            ? 1
+            : 0;
+        if (aPref !== bPref) return bPref - aPref;
+        return b.marketCap - a.marketCap;
+      });
+      return matched;
+    }
+
     switch (tab) {
       case "trending":
-        list = sortedTrending;
-        break;
+        return sortedTrending;
       case "new":
-        list = sortedNew;
-        break;
+        return sortedNew;
       case "near":
-        list = sortedNew.filter(t => {
+        return sortedNew.filter(t => {
           if (t.phase === "graduated") return false;
           if (t.phase === "ready_to_graduate") return true;
           return bondingProgressPct(t) >= 75;
         });
-        break;
       case "graduated":
-        list = sortedTrending.filter(t => t.phase === "graduated");
-        break;
+        return sortedTrending.filter(t => t.phase === "graduated");
       case "mcap":
-        list = sortedByMcap;
-        break;
+        return sortedByMcap;
       default:
-        list = sortedTrending;
+        return sortedTrending;
     }
-    if (q) {
-      list = list.filter(
-        t =>
-          t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)
-      );
-    }
-    return list;
   }
 
   return {

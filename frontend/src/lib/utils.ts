@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { PublicKey } from "@solana/web3.js";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -66,6 +67,21 @@ export function formatSolPerTokenPrice(solPerToken: number): string {
 
 export function shortenAddress(address: string, chars = 4): string {
   return `${address.slice(0, chars)}...${address.slice(-chars)}`;
+}
+
+/** True when `value` is a plausible base58 Solana pubkey (mint / wallet). */
+export function isSolanaAddress(value: string): boolean {
+  const s = value.trim();
+  if (s.length < 32 || s.length > 44) return false;
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s)) return false;
+  try {
+    // Throws if decode fails or byte length ≠ 32
+    // eslint-disable-next-line no-new
+    new PublicKey(s);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function calcBondingCurveProgress(currentSOL: number, targetSOL: number): number {
