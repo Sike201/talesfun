@@ -838,28 +838,29 @@ function LeveragePanel({
   const walletTokens =
     Number(tokenBalanceRaw || "0") / 10 ** Math.max(0, tokenDecimals || 6);
 
-  // Max margin scales with leverage: same max notional budget ÷ leverage.
-  // 1.0x → ~full wallet; 1.2x → wallet/1.2; also clamped by pool borrow depth.
+  // 1.0x = collateral only (no borrow) → Max = full wallet. Not a swap.
+  // >1x borrows against that collateral → Max margin shrinks with leverage / pool CF.
   const borrowFraction = Math.max(0, lockedLev - 1) / Math.max(lockedLev, 1);
+  const isOneX = borrowFraction < 1e-8;
   const effectiveCf = Math.min(borrowFraction, safeCf);
   const maxPoolBorrowSol = Math.max(0.001, reserveSol * 0.12);
   const walletLongCap =
     walletTokens > 0 ? walletTokens * 0.98 : Number.POSITIVE_INFINITY;
   const poolLongCap =
-    effectiveCf > 1e-8 && spot > 0
+    !isOneX && effectiveCf > 1e-8 && spot > 0
       ? maxPoolBorrowSol / (spot * effectiveCf * 0.9)
-      : spot > 0
-        ? (reserveSol * 0.25) / spot
-        : Number.POSITIVE_INFINITY;
-  const maxLongNotional = Math.min(walletLongCap, poolLongCap);
-  const maxLongMarginTokens = maxLongNotional / Math.max(lockedLev, 1);
+      : Number.POSITIVE_INFINITY;
+  const maxLongMarginTokens = isOneX
+    ? walletLongCap
+    : Math.min(walletLongCap, poolLongCap) / Math.max(lockedLev, 1);
   const walletShortCap = Math.max(0, walletSol - 0.02);
   const poolShortCap =
-    effectiveCf > 1e-8
+    !isOneX && effectiveCf > 1e-8
       ? maxPoolBorrowSol / (effectiveCf * 0.85)
-      : reserveSol * 0.25;
-  const maxShortNotional = Math.min(walletShortCap, poolShortCap);
-  const maxShortMarginSol = maxShortNotional / Math.max(lockedLev, 1);
+      : Number.POSITIVE_INFINITY;
+  const maxShortMarginSol = isOneX
+    ? walletShortCap
+    : Math.min(walletShortCap, poolShortCap) / Math.max(lockedLev, 1);
   const maxMargin =
     direction === "short" ? maxShortMarginSol : maxLongMarginTokens;
 
@@ -1011,12 +1012,14 @@ function LeveragePanel({
         onChange={setDirection}
       />
 
-      <div className="flex items-center justify-between px-0.5 pt-2">
+      <div className="flex items-center justify-between gap-2 px-0.5 pt-2">
         <span className="text-[10px] font-medium uppercase tracking-wider text-white/35">
           Isolated
         </span>
-        <span className="text-[10px] text-white/40">
-          Max {maxLev.toFixed(1)}x · CF {(safeCf * 100).toFixed(0)}% · {reserveSol > 0 ? `${reserveSol.toFixed(2)} SOL depth` : "awaiting pool"}
+        <span className="text-right text-[10px] text-white/40">
+          {isOneX
+            ? "1.0x = collateral only (not a swap) · Max = full wallet"
+            : `Max ${maxLev.toFixed(1)}x · CF ${(safeCf * 100).toFixed(0)}% · ${reserveSol > 0 ? `${reserveSol.toFixed(2)} SOL depth` : "awaiting pool"}`}
         </span>
       </div>
 
