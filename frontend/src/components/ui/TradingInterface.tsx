@@ -1180,6 +1180,7 @@ function BorrowLtvSlider({
   maxBorrowPct,
   liqPct,
   onChange,
+  depthSol,
 }: {
   ltvPct: number;
   /** Max borrow CF % for this pool (impact-aware). */
@@ -1187,60 +1188,59 @@ function BorrowLtvSlider({
   /** Liquidation CF % (docs: borrow CF ≈ liq CF × 0.95). */
   liqPct: number;
   onChange: (pct: number) => void;
+  depthSol: number;
 }) {
-  const trackMax = Math.max(liqPct, 85);
-  const fill = Math.min(100, (ltvPct / trackMax) * 100);
-  const maxMark = Math.min(100, (maxBorrowPct / trackMax) * 100);
-  const liqMark = Math.min(100, (liqPct / trackMax) * 100);
+  // Scale the bar to pool Max CF only — stretching to 85% made Max/Liq overlap
+  // and painted most of the track as a fake "danger" zone on thin pools.
+  const hi = Math.max(1, maxBorrowPct);
+  const fill = Math.min(100, (Math.min(ltvPct, hi) / hi) * 100);
+  const nearMax = ltvPct >= hi * 0.85;
 
   return (
-    <div className="space-y-2 px-0.5 pt-1">
-      <div className="flex items-center justify-between">
+    <div className="space-y-2.5 px-0.5 pt-2">
+      <div className="flex items-baseline justify-between gap-2">
         <span className="text-[11px] font-medium text-white/45">Loan to value</span>
         <span className="text-sm font-semibold tabular-nums text-white">
-          {ltvPct.toFixed(2)}%
+          {ltvPct.toFixed(1)}%
         </span>
       </div>
-      <div className="relative h-8">
+
+      <div className="relative h-6">
         <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
           <div
-            className="h-full rounded-full bg-emerald-400/90"
+            className={cn(
+              "h-full rounded-full transition-[width]",
+              nearMax ? "bg-amber-400/90" : "bg-emerald-400/90"
+            )}
             style={{ width: `${fill}%` }}
           />
-          {/* Liquidation danger band */}
-          <div
-            className="absolute inset-y-0 right-0 bg-[repeating-linear-gradient(-45deg,rgba(239,68,68,0.55)_0_2px,transparent_2px_5px)]"
-            style={{ left: `${liqMark}%` }}
-          />
         </div>
-        {/* Max CF tick */}
-        <div
-          className="absolute top-0 bottom-0 w-px bg-white/70"
-          style={{ left: `${maxMark}%` }}
-          title={`Max ${maxBorrowPct.toFixed(0)}%`}
-        />
         <input
           type="range"
           min={1}
-          max={Number(maxBorrowPct.toFixed(1))}
+          max={Number(hi.toFixed(1))}
           step={0.1}
-          value={Math.min(ltvPct, maxBorrowPct)}
+          value={Math.min(ltvPct, hi)}
           onChange={e => onChange(parseFloat(e.target.value))}
-          className="absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent opacity-0"
+          className="absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow"
           aria-label="Loan to value"
         />
       </div>
-      <div className="relative h-4 text-[10px] text-white/40">
-        <span
-          className="absolute -translate-x-1/2 whitespace-nowrap"
-          style={{ left: `${maxMark}%` }}
-        >
-          Max <span className="font-semibold text-white/70">{maxBorrowPct.toFixed(0)}%</span>
+
+      <div className="flex items-center justify-between gap-3 text-[10px] tabular-nums">
+        <span className="text-white/35">1%</span>
+        <span className="text-center text-white/50">
+          Pool max{" "}
+          <span className="font-semibold text-white/80">{maxBorrowPct.toFixed(0)}%</span>
+          {depthSol > 0 ? (
+            <span className="text-white/35">
+              {" "}
+              · {depthSol < 1 ? "thin" : depthSol < 5 ? "moderate" : "deep"}{" "}
+              {depthSol.toFixed(2)} SOL
+            </span>
+          ) : null}
         </span>
-        <span
-          className="absolute -translate-x-1/2 whitespace-nowrap text-red-400/90"
-          style={{ left: `${Math.min(96, liqMark)}%` }}
-        >
+        <span className="text-red-400/80">
           Liq <span className="font-semibold">{liqPct.toFixed(0)}%</span>
         </span>
       </div>
@@ -1388,8 +1388,8 @@ function BorrowPanel({
   };
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between px-0.5 pt-1">
+    <div className="space-y-2.5">
+      <div className="flex items-center justify-between px-0.5 pt-0.5">
         <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-white/35">
           <OmnipairTabIcon mode="borrow" />
           Isolated
@@ -1399,7 +1399,6 @@ function BorrowPanel({
         </span>
       </div>
 
-      {/* You borrow — derived from collateral × LTV */}
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-[11px] font-medium text-white/40">You borrow</span>
@@ -1413,8 +1412,7 @@ function BorrowPanel({
         </p>
       </div>
 
-      {/* Collateral — primary input */}
-      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3 ring-1 ring-white/10">
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
         <div className="mb-1 flex items-center justify-between">
           <span className="text-[11px] font-medium text-white/40">Collateral</span>
           <span className="text-[11px] font-medium text-white/55">{displayTicker}</span>
@@ -1461,38 +1459,9 @@ function BorrowPanel({
         ltvPct={Math.min(ltvPct, maxBorrowPct)}
         maxBorrowPct={maxBorrowPct}
         liqPct={liqPct}
+        depthSol={reserveSol}
         onChange={setLtvPct}
       />
-
-      <div className="space-y-0 px-0.5 py-1">
-        <TalesTradeDetailsRow
-          label="Spot"
-          value={spot > 0 ? formatSolPerTokenPrice(spot) : "—"}
-        />
-        <TalesTradeDetailsRow
-          label="Collateral value"
-          value={collNum > 0 ? formatUSD(collValueUsd) : "—"}
-        />
-        <TalesTradeDetailsRow
-          label="LTV"
-          value={collNum > 0 ? `${(ltv * 100).toFixed(2)}%` : "—"}
-        />
-        <TalesTradeDetailsRow
-          label="Liquidates at"
-          value={
-            collNum > 0 && liqPriceUsd > 0
-              ? formatTokenPriceUsd(liqPriceUsd)
-              : "—"
-          }
-          valueClassName={
-            collNum > 0 && liqPriceUsd > 0 ? "text-red-400/90" : undefined
-          }
-        />
-        <TalesTradeDetailsRow
-          label="Pool depth"
-          value={reserveSol > 0 ? `${reserveSol.toFixed(3)} SOL` : "—"}
-        />
-      </div>
 
       {!omnipairPoolSnapshot ? (
         <p className="px-0.5 text-[10px] text-amber-200/70">Waiting for Omnipair pool…</p>
@@ -1503,7 +1472,7 @@ function BorrowPanel({
           type="button"
           onClick={handleBorrow}
           disabled={loading || !(collNum > 0) || !(borrowSol > 0) || !omnipairPoolSnapshot}
-          className="mt-2 w-full rounded-lg bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
+          className="w-full rounded-lg bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading
             ? "Borrowing…"
@@ -1516,13 +1485,11 @@ function BorrowPanel({
       )}
 
       {collNum > 0 && liqPriceUsd > 0 ? (
-        <p className="px-0.5 text-center text-[11px] text-white/45">
+        <p className="px-0.5 pb-0.5 text-center text-[11px] leading-snug text-white/45">
           Liquidates at{" "}
           <span className="font-semibold tabular-nums text-red-400/90">
             {formatTokenPriceUsd(liqPriceUsd)}
           </span>
-          <span className="text-white/30"> · </span>
-          mark {formatTokenPriceUsd(priceUSD)}
         </p>
       ) : null}
     </div>
