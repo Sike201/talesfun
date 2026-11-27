@@ -810,41 +810,6 @@ function LeveragePanel({
     clampLeverage(Math.min(1.5, maxLev), maxLev)
   );
 
-  // Keep selection inside pool max when depth / CF changes.
-  useEffect(() => {
-    setLeverage(prev => clampLeverage(prev, maxLev));
-  }, [maxLev]);
-
-  // If leverage rises and current margin exceeds the new Max, clamp the input.
-  useEffect(() => {
-    const n = parseFloat(size);
-    if (!(n > 0) || !Number.isFinite(maxMargin)) return;
-    if (n > maxMargin + 1e-12) {
-      setSize(
-        String(
-          Number(maxMargin >= 1000 ? maxMargin.toFixed(0) : maxMargin.toPrecision(6))
-        )
-      );
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp when caps move
-  }, [maxMargin, direction]);
-
-  useEffect(() => {
-    if (!walletAdapter.publicKey) return;
-    const mine = listOpenPositions(token.mint).find(
-      p => p.wallet === walletAdapter.publicKey!.toBase58()
-    );
-    if (mine) {
-      setOpenPos({
-        direction: mine.direction,
-        leverage: mine.leverage,
-        marginUi: mine.marginUi,
-        entrySpotSol: mine.entrySpotSol,
-        entrySolUsd: mine.entrySolUsd,
-      });
-    }
-  }, [token.mint, walletAdapter.publicKey]);
-
   const sizeNum = parseFloat(size) || 0;
   const spot =
     omnipairPoolSnapshot?.spotPriceSol && omnipairPoolSnapshot.spotPriceSol > 0
@@ -894,6 +859,41 @@ function LeveragePanel({
 
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
+
+  // Keep selection inside pool max when depth / CF changes.
+  useEffect(() => {
+    setLeverage(prev => clampLeverage(prev, maxLev));
+  }, [maxLev]);
+
+  // If leverage rises and current margin exceeds the new Max, clamp the input.
+  useEffect(() => {
+    const n = parseFloat(size);
+    if (!(n > 0) || !Number.isFinite(maxMargin)) return;
+    if (n > maxMargin + 1e-12) {
+      setSize(
+        String(
+          Number(maxMargin >= 1000 ? maxMargin.toFixed(0) : maxMargin.toPrecision(6))
+        )
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp when caps move
+  }, [maxMargin, direction]);
+
+  useEffect(() => {
+    if (!walletAdapter.publicKey) return;
+    const mine = listOpenPositions(token.mint).find(
+      p => p.wallet === walletAdapter.publicKey!.toBase58()
+    );
+    if (mine) {
+      setOpenPos({
+        direction: mine.direction,
+        leverage: mine.leverage,
+        marginUi: mine.marginUi,
+        entrySpotSol: mine.entrySpotSol,
+        entrySolUsd: mine.entrySolUsd,
+      });
+    }
+  }, [token.mint, walletAdapter.publicKey]);
 
   const handleOpen = async () => {
     if (!connected || !size || !omnipairPoolSnapshot) {
