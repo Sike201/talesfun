@@ -795,9 +795,11 @@ function LeveragePanel({
     entrySpotSol: number;
     entrySolUsd: number;
   } | null>(null);
-  const { solBalanceLamports, tokenBalanceDisplay } = useWalletBalances(
-    connected ? token.mint : undefined
-  );
+  const {
+    solBalanceLamports,
+    tokenBalanceRaw,
+    tokenDecimals,
+  } = useWalletBalances(connected ? token.mint : undefined);
 
   const reserveSol = omnipairPoolSnapshot
     ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
@@ -812,6 +814,20 @@ function LeveragePanel({
   useEffect(() => {
     setLeverage(prev => clampLeverage(prev, maxLev));
   }, [maxLev]);
+
+  // If leverage rises and current margin exceeds the new Max, clamp the input.
+  useEffect(() => {
+    const n = parseFloat(size);
+    if (!(n > 0) || !Number.isFinite(maxMargin)) return;
+    if (n > maxMargin + 1e-12) {
+      setSize(
+        String(
+          Number(maxMargin >= 1000 ? maxMargin.toFixed(0) : maxMargin.toPrecision(6))
+        )
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-clamp when caps move
+  }, [maxMargin, direction]);
 
   useEffect(() => {
     if (!walletAdapter.publicKey) return;
@@ -850,16 +866,31 @@ function LeveragePanel({
     ? markPositionValueUsd(openPos, spot)
     : { entryUsd: 0, markUsd: 0 };
 
-  // Cap margin so borrow stays within ~12% of pool SOL depth (impact-aware CF).
-  const maxShortMarginSol = Math.max(0.001, reserveSol * 0.12);
+  // Margin Max must use raw balance — locale strings like "194,659" parse as 194.
   const walletSol = solBalanceLamports / 1e9;
-  const walletTokens = parseFloat(tokenBalanceDisplay) || 0;
-  const maxLongMarginTokens =
-    walletTokens > 0 ? walletTokens * 0.5 : Number.POSITIVE_INFINITY;
+  const walletTokens =
+    Number(tokenBalanceRaw || "0") / 10 ** Math.max(0, tokenDecimals || 6);
+
+  // Lower leverage → less (or zero) borrow → larger allowed margin.
+  // 1.0x: collateral only → ~full wallet. Higher lev: pool-depth caps margin.
+  const borrowFraction = Math.max(0, lockedLev - 1) / Math.max(lockedLev, 1);
+  const effectiveCf = Math.min(borrowFraction, safeCf);
+  const maxPoolBorrowSol = Math.max(0.001, reserveSol * 0.12);
+  const walletLongCap =
+    walletTokens > 0 ? walletTokens * 0.98 : Number.POSITIVE_INFINITY;
+  const poolLongCap =
+    effectiveCf > 1e-8 && spot > 0
+      ? maxPoolBorrowSol / (spot * effectiveCf * 0.9)
+      : Number.POSITIVE_INFINITY;
+  const maxLongMarginTokens = Math.min(walletLongCap, poolLongCap);
+  const walletShortCap = Math.max(0, walletSol - 0.02);
+  const poolShortCap =
+    effectiveCf > 1e-8
+      ? maxPoolBorrowSol / (effectiveCf * 0.85)
+      : Number.POSITIVE_INFINITY;
+  const maxShortMarginSol = Math.min(walletShortCap, poolShortCap);
   const maxMargin =
-    direction === "short"
-      ? Math.min(maxShortMarginSol, Math.max(0, walletSol - 0.02))
-      : maxLongMarginTokens;
+    direction === "short" ? maxShortMarginSol : maxLongMarginTokens;
 
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
@@ -1033,10 +1064,23 @@ function LeveragePanel({
           Number.isFinite(maxMargin) && maxMargin > 0 ? (
             <button
               type="button"
-              className="text-[10px] font-semibold text-white/50 hover:text-white"
-              onClick={() => setSize(String(Number(maxMargin.toPrecision(6))))}
+              className="text-[10px] font-semibold tabular-nums text-white/50 hover:text-white"
+              onClick={() =>
+                setSize(
+                  String(
+                    Number(
+                      maxMargin >= 1000
+                        ? maxMargin.toFixed(0)
+                        : maxMargin.toPrecision(6)
+                    )
+                  )
+                )
+              }
             >
-              Max
+              Max{" "}
+              {maxMargin >= 1000
+                ? Math.floor(maxMargin).toLocaleString()
+                : Number(maxMargin.toPrecision(4))}
             </button>
           ) : null
         }
@@ -1076,6 +1120,18 @@ function LeveragePanel({
         <TalesTradeDetailsRow
           label="Pool depth"
           value={reserveSol > 0 ? `${reserveSol.toFixed(3)} SOL` : "—"}
+        />
+        <TalesTradeDetailsRow
+          label="Max margin"
+          value={
+            Number.isFinite(maxMargin) && maxMargin > 0
+              ? `${
+                  maxMargin >= 1000
+                    ? Math.floor(maxMargin).toLocaleString()
+                    : Number(maxMargin.toPrecision(4))
+                } ${direction === "short" ? "SOL" : displayTicker}`
+              : "—"
+          }
         />
       </div>
 
