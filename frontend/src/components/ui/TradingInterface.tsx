@@ -133,7 +133,7 @@ function TalesTradeDetailsRow({
   valueClassName,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   valueClassName?: string;
 }) {
   return (
@@ -767,9 +767,17 @@ function LeveragePanel({
     initialDirection ?? "long"
   );
   const [size, setSize] = useState("");
-  // Slider is integer 1–5x; on thin pools borrow is CF-capped (~0.22 → ~1.3x effective).
+  // Slider is integer 1–5x. Leverage is locked at open; mark moves position value only.
   const [leverage, setLeverage] = useState(2);
   const [loading, setLoading] = useState(false);
+  /** Last opened long/short — leverage stays fixed; only mark/position value updates. */
+  const [openPos, setOpenPos] = useState<{
+    direction: "long" | "short";
+    leverage: number;
+    marginUi: number;
+    entrySpotSol: number;
+    entrySolUsd: number;
+  } | null>(null);
   const { solBalanceLamports, tokenBalanceDisplay } = useWalletBalances(
     connected ? token.mint : undefined
   );
@@ -781,16 +789,29 @@ function LeveragePanel({
       : token.currentPrice;
   const usd = solUsd ?? 140;
   const currentPriceUSD = spot * usd;
-  const positionSize = sizeNum * leverage;
-  // Thin-pool impact-aware CF (~22%); protocol hard-cap 85% → meaningful max lev ≈ 1/(1−CF).
-  // Higher UI leverage still works: lending clamps borrow to CF (same effective size).
-  const thinCf = 0.22;
-  const maxLevFromCf = Math.min(MAX_LEVERAGE_UI, 1 / (1 - thinCf));
-  const effectiveLeverage = Math.min(leverage, MAX_LEVERAGE_UI);
+  const lockedLev = Math.min(leverage, MAX_LEVERAGE_UI);
+  const previewPosValueUsd =
+    direction === "long"
+      ? sizeNum * lockedLev * currentPriceUSD
+      : sizeNum * lockedLev * usd;
   const liqPrice =
     direction === "long"
-      ? currentPriceUSD * (1 - 1 / Math.max(effectiveLeverage, 1.1) + 0.05)
-      : currentPriceUSD * (1 + 1 / Math.max(effectiveLeverage, 1.1) - 0.05);
+      ? currentPriceUSD * (1 - 1 / Math.max(lockedLev, 1.1) + 0.05)
+      : currentPriceUSD * (1 + 1 / Math.max(lockedLev, 1.1) - 0.05);
+
+  // Open position: leverage never adjusts — only position value tracks mark.
+  const openEntryNotionalUsd = openPos
+    ? openPos.direction === "long"
+      ? openPos.marginUi * openPos.entrySpotSol * openPos.entrySolUsd * openPos.leverage
+      : openPos.marginUi * openPos.entrySolUsd * openPos.leverage
+    : 0;
+  const openMarkRatio =
+    openPos && openPos.entrySpotSol > 0 ? spot / openPos.entrySpotSol : 1;
+  const openPosValueUsd = openPos
+    ? openPos.direction === "long"
+      ? openEntryNotionalUsd * openMarkRatio
+      : openEntryNotionalUsd * (2 - openMarkRatio)
+    : 0;
 
   const reserveSol = omnipairPoolSnapshot
     ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
@@ -844,12 +865,15 @@ function LeveragePanel({
         leverage: levUsed,
         slippagePercent: 8,
       });
-      const cfNote =
-        levUsed > maxLevFromCf + 0.05
-          ? ` · borrow CF-capped (~${maxLevFromCf.toFixed(1)}x effective)`
-          : "";
+      setOpenPos({
+        direction,
+        leverage: levUsed,
+        marginUi: margin,
+        entrySpotSol: spot,
+        entrySolUsd: usd,
+      });
       toast.success(
-        `${direction === "long" ? "Long" : "Short"} ${levUsed.toFixed(1)}x submitted (${sigs.length} txs)${cfNote}`
+        `${direction === "long" ? "Long" : "Short"} ${levUsed.toFixed(1)}x opened — leverage locked`
       );
       const primarySig = sigs[sigs.length - 1] || sigs[0];
       if (primarySig && walletAdapter.publicKey) {
@@ -909,9 +933,52 @@ function LeveragePanel({
           Isolated
         </span>
         <span className="text-[10px] text-white/40">
-          Borrow CF-capped (~{maxLevFromCf.toFixed(1)}x effective on thin pools)
+          Leverage locks at open · mark moves position value
         </span>
       </div>
+
+      {openPos ? (
+        <div className="mx-0.5 mb-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={cn(
+                "text-[11px] font-semibold uppercase tracking-wide",
+                openPos.direction === "long" ? "text-emerald-400" : "text-red-400"
+              )}
+            >
+              Open {openPos.direction} · {openPos.leverage.toFixed(1)}x
+            </span>
+            <button
+              type="button"
+              className="text-[10px] text-white/40 hover:text-white/70"
+              onClick={() => setOpenPos(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="mt-1.5 space-y-0.5">
+            <TalesTradeDetailsRow
+              label="Leverage"
+              value={`${openPos.leverage.toFixed(1)}x (locked)`}
+            />
+            <TalesTradeDetailsRow
+              label="Position value"
+              value={formatUSD(Math.max(0, openPosValueUsd))}
+              valueClassName={
+                openPosValueUsd < openEntryNotionalUsd
+                  ? "text-red-400"
+                  : openPosValueUsd > openEntryNotionalUsd
+                    ? "text-emerald-400"
+                    : undefined
+              }
+            />
+            <TalesTradeDetailsRow
+              label="Entry → mark"
+              value={`${openPos.entrySpotSol.toExponential(3)} → ${spot > 0 ? spot.toExponential(3) : "—"} SOL`}
+            />
+          </div>
+        </div>
+      ) : null}
 
       <TalesTradeField
         label={direction === "long" ? "Margin (token)" : "Margin (SOL)"}
@@ -944,6 +1011,10 @@ function LeveragePanel({
 
       <div className="space-y-0 px-0.5 py-1">
         <TalesTradeDetailsRow
+          label="Leverage"
+          value={`${lockedLev.toFixed(1)}x`}
+        />
+        <TalesTradeDetailsRow
           label="Spot"
           value={spot > 0 ? `${spot.toExponential(3)} SOL` : "—"}
         />
@@ -952,16 +1023,8 @@ function LeveragePanel({
           value={sizeNum > 0 ? `$${liqPrice.toFixed(6)}` : "—"}
         />
         <TalesTradeDetailsRow
-          label="Notional"
-          value={
-            sizeNum > 0
-              ? formatUSD(
-                  direction === "long"
-                    ? positionSize * currentPriceUSD
-                    : positionSize * usd
-                )
-              : "—"
-          }
+          label="Position value"
+          value={sizeNum > 0 ? formatUSD(previewPosValueUsd) : "—"}
         />
         <TalesTradeDetailsRow
           label="Pool depth"
