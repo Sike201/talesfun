@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { AlertTriangle, ArrowDownUp } from "lucide-react";
+import { ArrowDownUp } from "lucide-react";
 import { Token } from "@/types";
 import { cn, formatUSD, formatSolPerTokenPrice, formatTokenPriceUsd } from "@/lib/utils";
 import toast from "react-hot-toast";
@@ -913,7 +913,6 @@ function LeveragePanel({
     ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
     : 0;
   const maxLev = poolMaxLeverage(reserveSol);
-  const safeCf = poolSafeCf(reserveSol);
   const [leverage, setLeverage] = useState(() =>
     clampLeverage(Math.min(1.5, maxLev), maxLev)
   );
@@ -1099,8 +1098,16 @@ function LeveragePanel({
     }
   };
 
+  const projectIcon = token.imageUrl?.trim() || null;
+  const marginChip =
+    direction === "long" ? (
+      <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
+    ) : (
+      <SwapTokenChip symbol="SOL" iconUrl={null} />
+    );
+
   return (
-    <div className="space-y-1">
+    <div className="space-y-2.5">
       <TalesSegmentToggle
         tone="signed"
         options={[
@@ -1108,71 +1115,81 @@ function LeveragePanel({
           { id: "short" as const, label: "Short" },
         ]}
         value={direction}
-        onChange={setDirection}
+        onChange={d => {
+          maxPinnedRef.current = false;
+          setDirection(d);
+        }}
       />
 
-      <div className="flex items-center justify-between gap-2 px-0.5 pt-2">
-        <span className="text-[10px] font-medium uppercase tracking-wider text-white/35">
-          Isolated
-        </span>
-        <span className="text-right text-[10px] text-white/40">
-          {isOneX
-            ? `1.0x collateral only · Max pool-capped (${(safeCf * 100).toFixed(0)}% CF band)`
-            : `Max ${maxLev.toFixed(1)}x · CF ${(safeCf * 100).toFixed(0)}% · ${reserveSol > 0 ? `${reserveSol.toFixed(2)} SOL depth` : "awaiting pool"}`}
-        </span>
-      </div>
-
       {openPos ? (
-        <div className="mx-0.5 mb-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
           <div className="flex items-center justify-between gap-2">
-            <span
-              className={cn(
-                "text-[11px] font-semibold uppercase tracking-wide",
-                openPos.direction === "long" ? "text-emerald-400" : "text-red-400"
-              )}
-            >
-              Open {openPos.direction} · {openPos.leverage.toFixed(1)}x locked
-            </span>
+            <div className="flex items-center gap-2">
+              <SwapTokenChip
+                symbol={displayTicker}
+                iconUrl={projectIcon}
+              />
+              <span
+                className={cn(
+                  "text-[12px] font-semibold",
+                  openPos.direction === "long"
+                    ? "text-emerald-400"
+                    : "text-red-400"
+                )}
+              >
+                {openPos.leverage.toFixed(1)}x{" "}
+                {openPos.direction === "long" ? "Long" : "Short"}
+              </span>
+            </div>
             <button
               type="button"
-              className="text-[10px] text-white/40 hover:text-white/70"
+              className="text-[11px] text-white/35 hover:text-white/65"
               onClick={() => setOpenPos(null)}
             >
-              Dismiss
+              Hide
             </button>
           </div>
-          <div className="mt-1.5 space-y-0.5">
-            <TalesTradeDetailsRow
-              label="Leverage"
-              value={`${openPos.leverage.toFixed(1)}x`}
-            />
-            <TalesTradeDetailsRow
-              label="Position value"
-              value={formatUSD(openMark.markUsd)}
-              valueClassName={
-                openMark.markUsd < openMark.entryUsd
-                  ? "text-red-400"
-                  : openMark.markUsd > openMark.entryUsd
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div>
+              <p className="text-[10px] text-white/35">Value</p>
+              <p
+                className={cn(
+                  "text-[14px] font-semibold tabular-nums",
+                  openMark.markUsd < openMark.entryUsd
+                    ? "text-red-400"
+                    : "text-white"
+                )}
+              >
+                {formatUSD(openMark.markUsd)}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] text-white/35">PnL</p>
+              <p
+                className={cn(
+                  "text-[14px] font-semibold tabular-nums",
+                  openMark.markUsd - openMark.entryUsd >= 0
                     ? "text-emerald-400"
-                    : undefined
-              }
-            />
-            <TalesTradeDetailsRow
-              label="Entry → mark"
-              value={`${formatSolPerTokenPrice(openPos.entrySpotSol).replace(/ SOL$/, "")} → ${spot > 0 ? formatSolPerTokenPrice(spot) : "—"}`}
-            />
+                    : "text-red-400"
+                )}
+              >
+                {openMark.markUsd - openMark.entryUsd >= 0 ? "+" : ""}
+                {formatUSD(openMark.markUsd - openMark.entryUsd)}
+              </p>
+            </div>
           </div>
         </div>
       ) : null}
 
-      <TalesTradeField
-        label={direction === "long" ? "Margin (token)" : "Margin (SOL)"}
-        suffix={direction === "long" ? displayTicker : "SOL"}
-        headerRight={
-          Number.isFinite(maxMargin) && maxMargin > 0 ? (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-[12px] font-medium text-white/45">
+            {direction === "long" ? "Margin" : "Margin"}
+          </span>
+          {Number.isFinite(maxMargin) && maxMargin > 0 ? (
             <button
               type="button"
-              className="text-[10px] font-semibold tabular-nums text-white/50 hover:text-white"
+              className="text-[11px] font-semibold tabular-nums text-white/50 hover:text-white"
               onClick={() => {
                 maxPinnedRef.current = true;
                 setSize(
@@ -1187,20 +1204,27 @@ function LeveragePanel({
                 ? Math.floor(maxMargin).toLocaleString()
                 : Number(maxMargin.toPrecision(4))}
             </button>
-          ) : null
-        }
-      >
-        <input
-          type="number"
-          value={size}
-          onChange={e => {
-            maxPinnedRef.current = false;
-            setSize(e.target.value);
-          }}
-          placeholder="0"
-          className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
-        />
-      </TalesTradeField>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-3">
+          <input
+            type="number"
+            value={size}
+            onChange={e => {
+              maxPinnedRef.current = false;
+              setSize(e.target.value);
+            }}
+            placeholder="0"
+            className="min-w-0 flex-1 bg-transparent text-[26px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+          />
+          {marginChip}
+        </div>
+        <p className="mt-2 text-[11px] text-white/35">
+          {direction === "long"
+            ? `Balance ${walletTokens > 0 ? formatNumberCompact(walletTokens) : "0"} ${displayTicker}`
+            : `Balance ${walletSol > 0 ? walletSol.toFixed(3) : "0"} SOL`}
+        </p>
+      </div>
 
       <LeverageRangeControl
         value={lockedLev}
@@ -1209,11 +1233,7 @@ function LeveragePanel({
         onChange={v => setLeverage(clampLeverage(v, maxLev))}
       />
 
-      <div className="space-y-0 px-0.5 py-1">
-        <TalesTradeDetailsRow
-          label="Spot"
-          value={spot > 0 ? formatSolPerTokenPrice(spot) : "—"}
-        />
+      <div className="space-y-0 px-0.5">
         <TalesTradeDetailsRow
           label="Est. liquidation"
           value={sizeNum > 0 ? formatTokenPriceUsd(liqPrice) : "—"}
@@ -1222,19 +1242,18 @@ function LeveragePanel({
           label="Position value"
           value={sizeNum > 0 ? formatUSD(previewPosValueUsd) : "—"}
         />
+        {!isOneX ? (
+          <TalesTradeDetailsRow
+            label="Max leverage"
+            value={`${maxLev.toFixed(1)}x`}
+          />
+        ) : null}
       </div>
 
-      {lockedLev >= Math.max(3, maxLev - 0.2) && maxLev >= 3 && (
-        <div className="flex gap-2 px-0.5 py-1">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-300/80" />
-          <p className="text-[10px] leading-relaxed text-white/40">
-            Near pool max — keep margin small so borrow clears impact-aware CF.
-          </p>
-        </div>
-      )}
-
       {!omnipairPoolSnapshot ? (
-        <p className="px-0.5 text-[10px] text-amber-200/70">Waiting for Omnipair pool…</p>
+        <p className="px-0.5 text-[11px] text-amber-200/70">
+          Waiting for Omnipair pool…
+        </p>
       ) : null}
 
       {connected ? (
@@ -1243,21 +1262,28 @@ function LeveragePanel({
           onClick={handleOpen}
           disabled={loading || !size || !omnipairPoolSnapshot}
           className={cn(
-            "mt-2 w-full rounded-lg py-3.5 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
+            "w-full rounded-xl py-3.5 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
             direction === "long"
               ? "bg-emerald-500 text-[#04140a] hover:brightness-105"
               : "bg-red-500 text-white hover:brightness-105"
           )}
         >
           {loading
-            ? "Submitting…"
-            : `${direction === "long" ? "Long" : "Short"} ${token.ticker}`}
+            ? "Opening…"
+            : `${direction === "long" ? "Long" : "Short"} ${displayTicker}`}
         </button>
       ) : (
         <WalletMultiButton />
       )}
     </div>
   );
+}
+
+function formatNumberCompact(n: number): string {
+  if (!(n > 0)) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1000) return Math.floor(n).toLocaleString();
+  return Number(n.toPrecision(4)).toString();
 }
 
 function BorrowLtvSlider({
@@ -1459,71 +1485,70 @@ function BorrowPanel({
     }
   };
 
+  const projectIcon = token.imageUrl?.trim() || null;
+
   return (
     <div className="space-y-2.5">
       <div className="flex items-center justify-between px-0.5 pt-0.5">
-        <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-white/35">
-          <OmnipairTabIcon mode="borrow" />
-          Isolated
+        <span className="flex items-center gap-2 text-[12px] font-medium text-white/50">
+          <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
+          <span className="text-white/25">/</span>
+          <SwapTokenChip symbol="SOL" iconUrl={null} />
         </span>
-        <span className="text-[10px] text-white/40">
-          Post {displayTicker} · borrow SOL
-        </span>
+        <span className="text-[11px] text-white/35">Isolated</span>
       </div>
 
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[11px] font-medium text-white/40">You borrow</span>
-          <span className="text-[11px] font-medium text-white/55">SOL</span>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-[12px] font-medium text-white/45">You borrow</span>
         </div>
-        <p className="text-2xl font-semibold tabular-nums tracking-tight text-white">
-          {collNum > 0 ? borrowSol.toFixed(6) : "0"}
-        </p>
-        <p className="mt-1 text-[10px] tabular-nums text-white/35">
+        <div className="flex items-center gap-3">
+          <p className="min-w-0 flex-1 text-[26px] font-semibold tabular-nums tracking-tight text-white">
+            {collNum > 0 ? borrowSol.toFixed(6) : "0"}
+          </p>
+          <SwapTokenChip symbol="SOL" iconUrl={null} />
+        </div>
+        <p className="mt-2 text-[11px] tabular-nums text-white/35">
           {collNum > 0 ? `≈ ${formatUSD(borrowSol * usd)}` : "—"}
         </p>
       </div>
 
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[11px] font-medium text-white/40">Collateral</span>
-          <span className="text-[11px] font-medium text-white/55">{displayTicker}</span>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-[12px] font-medium text-white/45">Collateral</span>
+          <button
+            type="button"
+            disabled={!(maxCollateral > 0)}
+            onClick={() =>
+              setCollateral(
+                maxCollateral >= 1000
+                  ? String(Math.floor(maxCollateral))
+                  : String(Number(maxCollateral.toPrecision(6)))
+              )
+            }
+            className="text-[11px] font-semibold text-white/50 hover:text-white disabled:opacity-40"
+          >
+            Max
+          </button>
         </div>
-        <input
-          type="number"
-          value={collateral}
-          onChange={e => setCollateral(e.target.value)}
-          placeholder="0"
-          className="w-full bg-transparent text-2xl font-semibold tabular-nums tracking-tight text-white placeholder:text-white/20 focus:outline-none"
-        />
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          <span className="text-[10px] tabular-nums text-white/35">
+        <div className="flex items-center gap-3">
+          <input
+            type="number"
+            value={collateral}
+            onChange={e => setCollateral(e.target.value)}
+            placeholder="0"
+            className="min-w-0 flex-1 bg-transparent text-[26px] font-semibold tabular-nums tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+          />
+          <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-white/35">
+          <span className="tabular-nums">
             {collNum > 0 ? `≈ ${formatUSD(collValueUsd)}` : "—"}
           </span>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] tabular-nums text-white/40">
-              Balance{" "}
-              {walletTokens > 0
-                ? walletTokens >= 1000
-                  ? Math.floor(walletTokens).toLocaleString()
-                  : Number(walletTokens.toPrecision(4))
-                : "0"}
-            </span>
-            <button
-              type="button"
-              disabled={!(maxCollateral > 0)}
-              onClick={() =>
-                setCollateral(
-                  maxCollateral >= 1000
-                    ? String(Math.floor(maxCollateral))
-                    : String(Number(maxCollateral.toPrecision(6)))
-                )
-              }
-              className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:border-white/35 hover:text-white disabled:opacity-40"
-            >
-              Max
-            </button>
-          </div>
+          <span className="tabular-nums">
+            Balance{" "}
+            {walletTokens > 0 ? formatNumberCompact(walletTokens) : "0"}
+          </span>
         </div>
       </div>
 
