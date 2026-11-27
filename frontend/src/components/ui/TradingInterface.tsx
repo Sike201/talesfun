@@ -1173,6 +1173,81 @@ function LeveragePanel({
   );
 }
 
+/* ─── Borrow LTV slider (Omnipair-beta inspired, Tales chrome) ───── */
+
+function BorrowLtvSlider({
+  ltvPct,
+  maxBorrowPct,
+  liqPct,
+  onChange,
+}: {
+  ltvPct: number;
+  /** Max borrow CF % for this pool (impact-aware). */
+  maxBorrowPct: number;
+  /** Liquidation CF % (docs: borrow CF ≈ liq CF × 0.95). */
+  liqPct: number;
+  onChange: (pct: number) => void;
+}) {
+  const trackMax = Math.max(liqPct, 85);
+  const fill = Math.min(100, (ltvPct / trackMax) * 100);
+  const maxMark = Math.min(100, (maxBorrowPct / trackMax) * 100);
+  const liqMark = Math.min(100, (liqPct / trackMax) * 100);
+
+  return (
+    <div className="space-y-2 px-0.5 pt-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium text-white/45">Loan to value</span>
+        <span className="text-sm font-semibold tabular-nums text-white">
+          {ltvPct.toFixed(2)}%
+        </span>
+      </div>
+      <div className="relative h-8">
+        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
+          <div
+            className="h-full rounded-full bg-emerald-400/90"
+            style={{ width: `${fill}%` }}
+          />
+          {/* Liquidation danger band */}
+          <div
+            className="absolute inset-y-0 right-0 bg-[repeating-linear-gradient(-45deg,rgba(239,68,68,0.55)_0_2px,transparent_2px_5px)]"
+            style={{ left: `${liqMark}%` }}
+          />
+        </div>
+        {/* Max CF tick */}
+        <div
+          className="absolute top-0 bottom-0 w-px bg-white/70"
+          style={{ left: `${maxMark}%` }}
+          title={`Max ${maxBorrowPct.toFixed(0)}%`}
+        />
+        <input
+          type="range"
+          min={1}
+          max={Number(maxBorrowPct.toFixed(1))}
+          step={0.1}
+          value={Math.min(ltvPct, maxBorrowPct)}
+          onChange={e => onChange(parseFloat(e.target.value))}
+          className="absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent opacity-0"
+          aria-label="Loan to value"
+        />
+      </div>
+      <div className="relative h-4 text-[10px] text-white/40">
+        <span
+          className="absolute -translate-x-1/2 whitespace-nowrap"
+          style={{ left: `${maxMark}%` }}
+        >
+          Max <span className="font-semibold text-white/70">{maxBorrowPct.toFixed(0)}%</span>
+        </span>
+        <span
+          className="absolute -translate-x-1/2 whitespace-nowrap text-red-400/90"
+          style={{ left: `${Math.min(96, liqMark)}%` }}
+        >
+          Liq <span className="font-semibold">{liqPct.toFixed(0)}%</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Borrow ─────────────────────────────────────────────────────── */
 
 function BorrowPanel({
@@ -1187,31 +1262,79 @@ function BorrowPanel({
   const { connection } = useConnection();
   const walletAdapter = useWallet();
   const { solUsd } = useSolUsd();
-  const [amount, setAmount] = useState("");
+  const [collateral, setCollateral] = useState("");
+  const [ltvPct, setLtvPct] = useState(12);
   const [loading, setLoading] = useState(false);
+  const {
+    tokenBalanceRaw,
+    tokenDecimals,
+  } = useWalletBalances(connected ? token.mint : undefined);
 
-  const num = parseFloat(amount) || 0;
+  const collNum = parseFloat(collateral) || 0;
   const spot =
     omnipairPoolSnapshot?.spotPriceSol && omnipairPoolSnapshot.spotPriceSol > 0
       ? omnipairPoolSnapshot.spotPriceSol
       : token.currentPrice;
   const usd = solUsd ?? 140;
-  // Docs: borrow limit ≈ coll × impact-aware CF × 0.95; thin pools often ≪ 85%.
-  // Match thin-pool impact-aware CF used in sendOmnipairBorrowAgainstProjectTx / leverage.
-  const maxBorrowSol = num * spot * 0.22;
+  const reserveSol = omnipairPoolSnapshot
+    ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
+    : 0;
+  const reserveProjectUi = omnipairPoolSnapshot
+    ? Number(omnipairPoolSnapshot.reserveProjectRaw) /
+      10 ** Math.max(0, omnipairPoolSnapshot.projectTokenDecimals || 6)
+    : 0;
+  // Docs: Borrow CF = Liq CF × 0.95; thin pools use impact-aware CF ≪ 85%.
+  const maxBorrowCf = poolSafeCf(reserveSol);
+  const maxBorrowPct = Math.round(maxBorrowCf * 1000) / 10; // e.g. 22
+  const liqPct = Math.min(85, Math.round((maxBorrowCf / 0.95) * 1000) / 10);
+
+  useEffect(() => {
+    setLtvPct(prev => Math.min(prev, maxBorrowPct));
+  }, [maxBorrowPct]);
+
+  const walletTokens =
+    Number(tokenBalanceRaw || "0") / 10 ** Math.max(0, tokenDecimals || 6);
+  const impactCap =
+    reserveProjectUi > 0 ? reserveProjectUi * 0.12 : walletTokens;
+  const maxCollateral = Math.min(
+    walletTokens > 0 ? walletTokens * 0.98 : 0,
+    impactCap
+  );
+
+  const collValueSol = collNum * spot;
+  const collValueUsd = collValueSol * usd;
+  const ltv = Math.min(ltvPct, maxBorrowPct) / 100;
+  // Also don't request more SOL than thin-pool cash band.
+  const poolBorrowCapSol = Math.max(0, reserveSol * 0.12);
+  const borrowSolRaw = collValueSol * ltv;
+  const borrowSol = Math.min(borrowSolRaw, poolBorrowCapSol);
   const priceUSD = spot * usd;
+  // Debt SOL / (coll × liqCf) ≈ spot at liquidation (token price falls).
+  const liqSpotSol =
+    collNum > 0 && liqPct > 0 ? (borrowSol / collNum) / (liqPct / 100) : 0;
+  const liqPriceUsd = liqSpotSol * usd;
 
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
 
   const handleBorrow = async () => {
-    if (!connected || !amount || !omnipairPoolSnapshot) {
+    if (!connected || !collateral || !omnipairPoolSnapshot) {
       toast.error("Connect wallet and wait for the Omnipair pool");
       return;
     }
-    const coll = parseFloat(amount);
+    const coll = parseFloat(collateral);
     if (!(coll > 0)) {
       toast.error("Enter collateral amount");
+      return;
+    }
+    if (Number.isFinite(maxCollateral) && coll > maxCollateral + 1e-9) {
+      toast.error(
+        `Max collateral for this pool is ${maxCollateral.toPrecision(4)} ${displayTicker}`
+      );
+      return;
+    }
+    if (!(borrowSol > 0)) {
+      toast.error("Borrow amount too small — raise collateral or LTV");
       return;
     }
     setLoading(true);
@@ -1226,11 +1349,13 @@ function BorrowPanel({
         wallet,
         snapshot: omnipairPoolSnapshot,
         collateralTokenUi: coll,
+        borrowSolUi: borrowSol,
       });
-      toast.success(`Borrowed SOL — collateral ${collateralSig.slice(0, 8)}…`);
-      console.info("[borrow]", { collateralSig, borrowSig });
+      toast.success(
+        `Borrowed ${borrowSol.toFixed(4)} SOL @ ${ltvPct.toFixed(1)}% LTV`
+      );
+      console.info("[borrow]", { collateralSig, borrowSig, ltvPct, borrowSol });
       if (walletAdapter.publicKey) {
-        const borrowSol = coll * spot * 0.22;
         void persistLaunchpadTrade({
           mint: token.mint,
           signature: borrowSig,
@@ -1263,63 +1388,143 @@ function BorrowPanel({
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 text-[10px] text-white/45">
-        <OmnipairTabIcon mode="borrow" />
-        Isolated borrow — post {displayTicker}, receive SOL (docs.omnipair.fi)
+    <div className="space-y-1">
+      <div className="flex items-center justify-between px-0.5 pt-1">
+        <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-white/35">
+          <OmnipairTabIcon mode="borrow" />
+          Isolated
+        </span>
+        <span className="text-[10px] text-white/40">
+          Post {displayTicker} · borrow SOL
+        </span>
       </div>
-      <TalesTradeField label="Collateral" suffix={displayTicker}>
+
+      {/* You borrow — derived from collateral × LTV */}
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-white/40">You borrow</span>
+          <span className="text-[11px] font-medium text-white/55">SOL</span>
+        </div>
+        <p className="text-2xl font-semibold tabular-nums tracking-tight text-white">
+          {collNum > 0 ? borrowSol.toFixed(6) : "0"}
+        </p>
+        <p className="mt-1 text-[10px] tabular-nums text-white/35">
+          {collNum > 0 ? `≈ ${formatUSD(borrowSol * usd)}` : "—"}
+        </p>
+      </div>
+
+      {/* Collateral — primary input */}
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3 ring-1 ring-white/10">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-white/40">Collateral</span>
+          <span className="text-[11px] font-medium text-white/55">{displayTicker}</span>
+        </div>
         <input
           type="number"
-          value={amount}
-          onChange={e => setAmount(e.target.value)}
+          value={collateral}
+          onChange={e => setCollateral(e.target.value)}
           placeholder="0"
-          className="w-full bg-transparent text-2xl font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+          className="w-full bg-transparent text-2xl font-semibold tabular-nums tracking-tight text-white placeholder:text-white/20 focus:outline-none"
         />
-      </TalesTradeField>
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <span className="text-[10px] tabular-nums text-white/35">
+            {collNum > 0 ? `≈ ${formatUSD(collValueUsd)}` : "—"}
+          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] tabular-nums text-white/40">
+              Balance{" "}
+              {walletTokens > 0
+                ? walletTokens >= 1000
+                  ? Math.floor(walletTokens).toLocaleString()
+                  : Number(walletTokens.toPrecision(4))
+                : "0"}
+            </span>
+            <button
+              type="button"
+              disabled={!(maxCollateral > 0)}
+              onClick={() =>
+                setCollateral(
+                  maxCollateral >= 1000
+                    ? String(Math.floor(maxCollateral))
+                    : String(Number(maxCollateral.toPrecision(6)))
+                )
+              }
+              className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:border-white/35 hover:text-white disabled:opacity-40"
+            >
+              Max
+            </button>
+          </div>
+        </div>
+      </div>
 
-      <TalesTradeField label="You borrow" suffix="SOL">
-        <span className="text-2xl font-semibold tracking-tight text-white">
-          {num > 0 ? maxBorrowSol.toFixed(4) : "0"}
-        </span>
-      </TalesTradeField>
+      <BorrowLtvSlider
+        ltvPct={Math.min(ltvPct, maxBorrowPct)}
+        maxBorrowPct={maxBorrowPct}
+        liqPct={liqPct}
+        onChange={setLtvPct}
+      />
 
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+      <div className="space-y-0 px-0.5 py-1">
+        <TalesTradeDetailsRow
+          label="Spot"
+          value={spot > 0 ? formatSolPerTokenPrice(spot) : "—"}
+        />
         <TalesTradeDetailsRow
           label="Collateral value"
-          value={num > 0 ? formatUSD(num * priceUSD) : "—"}
+          value={collNum > 0 ? formatUSD(collValueUsd) : "—"}
         />
         <TalesTradeDetailsRow
-          label="Available to borrow"
-          value={num > 0 ? `${maxBorrowSol.toFixed(4)} SOL` : "—"}
+          label="LTV"
+          value={collNum > 0 ? `${(ltv * 100).toFixed(2)}%` : "—"}
         />
-        <TalesTradeDetailsRow label="Preview LTV" value="~22% (thin-pool safe)" />
-        <TalesTradeDetailsRow label="Protocol max CF" value="85% impact-aware" />
-        <TalesTradeDetailsRow label="Market" value="Isolated pair" />
+        <TalesTradeDetailsRow
+          label="Liquidates at"
+          value={
+            collNum > 0 && liqPriceUsd > 0
+              ? formatTokenPriceUsd(liqPriceUsd)
+              : "—"
+          }
+          valueClassName={
+            collNum > 0 && liqPriceUsd > 0 ? "text-red-400/90" : undefined
+          }
+        />
+        <TalesTradeDetailsRow
+          label="Pool depth"
+          value={reserveSol > 0 ? `${reserveSol.toFixed(3)} SOL` : "—"}
+        />
       </div>
 
       {!omnipairPoolSnapshot ? (
-        <p className="text-[10px] leading-relaxed text-amber-200/80">
-          Waiting for Omnipair pool snapshot…
-        </p>
-      ) : (
-        <p className="text-[10px] leading-relaxed text-white/35">
-          Submits on-chain add_collateral then borrow against this market&apos;s reserves.
-        </p>
-      )}
+        <p className="px-0.5 text-[10px] text-amber-200/70">Waiting for Omnipair pool…</p>
+      ) : null}
 
       {connected ? (
         <button
           type="button"
           onClick={handleBorrow}
-          disabled={loading || !amount || !omnipairPoolSnapshot}
-          className="w-full rounded-full bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
+          disabled={loading || !(collNum > 0) || !(borrowSol > 0) || !omnipairPoolSnapshot}
+          className="mt-2 w-full rounded-lg bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
         >
-          {loading ? "Borrowing…" : "Borrow SOL"}
+          {loading
+            ? "Borrowing…"
+            : collNum > 0
+              ? `Borrow ${borrowSol.toFixed(4)} SOL`
+              : "Borrow SOL"}
         </button>
       ) : (
         <WalletMultiButton />
       )}
+
+      {collNum > 0 && liqPriceUsd > 0 ? (
+        <p className="px-0.5 text-center text-[11px] text-white/45">
+          Liquidates at{" "}
+          <span className="font-semibold tabular-nums text-red-400/90">
+            {formatTokenPriceUsd(liqPriceUsd)}
+          </span>
+          <span className="text-white/30"> · </span>
+          mark {formatTokenPriceUsd(priceUSD)}
+        </p>
+      ) : null}
     </div>
   );
 }
