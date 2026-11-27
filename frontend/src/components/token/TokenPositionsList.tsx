@@ -45,7 +45,7 @@ type Props = {
   onCountChange?: (count: number) => void;
 };
 
-const SOL_ICON = "/icons/sol.svg";
+const SOL_ICON = "/icons/sol.svg?v=2";
 
 function ToLiqRing({ pct }: { pct: number }) {
   const r = 7;

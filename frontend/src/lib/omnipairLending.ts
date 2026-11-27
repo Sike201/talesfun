@@ -134,6 +134,16 @@ export async function sendOmnipairAddCollateralTx(params: {
       from: owner,
       solUi: Number(amountRaw) / 1e9,
     });
+    // Keep ≥0.01 SOL for rent / subsequent borrow+swap legs.
+    const bal = await connection.getBalance(owner, "confirmed");
+    const feeLamports = fee?.feeLamports ?? BigInt(0);
+    const need =
+      Number(amountRaw) + Number(feeLamports) + 10_000_000; /* rent buffer */
+    if (bal < need) {
+      throw new Error(
+        `Insufficient SOL for collateral+fee+rent (have ${(bal / 1e9).toFixed(4)}, need ~${(need / 1e9).toFixed(4)})`
+      );
+    }
     if (fee) {
       ixs.push(fee.ix);
       console.info("[platform-fee] add_collateral SOL skim", {
@@ -563,6 +573,10 @@ export type OmnipairUserPositionView = {
   debt1Shares: bigint;
   debt0Raw: bigint;
   debt1Raw: bigint;
+  /** Locked liquidation CF for collateral0 (bps). */
+  collateral0LiquidationCfBps: number;
+  /** Locked liquidation CF for collateral1 (bps). */
+  collateral1LiquidationCfBps: number;
   token0: PublicKey;
   token1: PublicKey;
 };
@@ -610,6 +624,12 @@ export async function fetchOmnipairUserPosition(params: {
       pos.debt1Shares as BN,
       pair.totalDebt1 as BN,
       pair.totalDebt1Shares as BN
+    ),
+    collateral0LiquidationCfBps: Number(
+      pos.collateral0LiquidationCfBps ?? pos.collateral0_liquidation_cf_bps ?? 0
+    ),
+    collateral1LiquidationCfBps: Number(
+      pos.collateral1LiquidationCfBps ?? pos.collateral1_liquidation_cf_bps ?? 0
     ),
     token0: pair.token0 as PublicKey,
     token1: pair.token1 as PublicKey,
@@ -982,6 +1002,97 @@ export async function sendOmnipairClosePositionTx(params: {
   }
 
   return { sigs };
+}
+
+/**
+ * Liquidate an undercollateralized UserPosition (Omnipair `liquidate`).
+ * Anyone can call; payer receives seized collateral (minus protocol penalty share).
+ * Pass the collateral mint that backs the unhealthy debt.
+ */
+export async function sendOmnipairLiquidateTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  /** Owner of the underwater position */
+  positionOwner: PublicKey;
+  /** Collateral side to seize (project mint for borrows/longs; SOL for shorts) */
+  collateralMint: PublicKey;
+}): Promise<{ signature: string }> {
+  const { connection, wallet, snapshot, positionOwner, collateralMint } =
+    params;
+  const payer = wallet.publicKey;
+  if (!payer) throw new Error("Wallet not connected");
+
+  const pairPk = snapshot.pair;
+  const program = getProgram(connection, wallet);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pairAcct = await (program.account as any).pair.fetch(pairPk);
+  const rateModel = pairAcct.rateModel as PublicKey;
+  const [userPosition] = deriveOmnipairUserPosition(pairPk, positionOwner);
+  const [collateralVault] = deriveOmnipairCollateralVault(
+    pairPk,
+    collateralMint
+  );
+  const [reserveVault] = deriveOmnipairReserveVault(pairPk, collateralMint);
+  const [futarchyAuthority] = deriveOmnipairFutarchyAuthority();
+  const eventAuthority = omnipairEventAuthorityPda();
+  const tokenProgram = await mintTokenProgram(connection, collateralMint);
+  const callerAta = getAssociatedTokenAddressSync(
+    collateralMint,
+    payer,
+    false,
+    tokenProgram
+  );
+
+  const ixs = [
+    createAssociatedTokenAccountIdempotentInstruction(
+      payer,
+      callerAta,
+      payer,
+      collateralMint,
+      tokenProgram,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    ),
+  ];
+
+  const ix = await program.methods
+    .liquidate()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .accounts({
+      pair: pairPk,
+      userPosition,
+      rateModel,
+      futarchyAuthority,
+      collateralVault,
+      callerTokenAccount: callerAta,
+      collateralTokenMint: collateralMint,
+      reserveVault,
+      positionOwner,
+      payer,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      token2022Program: TOKEN_2022_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      eventAuthority,
+      program: OMNIPAIR_PROGRAM_ID,
+    } as any)
+    .instruction();
+
+  ixs.push(ix);
+
+  // Unwrap seized WSOL so liquidator receives native SOL.
+  if (collateralMint.equals(NATIVE_MINT)) {
+    ixs.push(
+      createCloseAccountInstruction(callerAta, payer, payer, [], TOKEN_PROGRAM_ID)
+    );
+  }
+
+  const signature = await sendTx(
+    connection,
+    wallet,
+    ixs,
+    `liquidate ${positionOwner.toBase58().slice(0, 8)}`
+  );
+  return { signature };
 }
 
 /**

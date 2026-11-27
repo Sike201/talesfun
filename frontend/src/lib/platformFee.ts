@@ -1,6 +1,12 @@
 /**
  * Tales platform overlay fee (on top of Omnipair pool swap fee).
  * Charged only on txs built by this site — skimmed as SOL to the platform treasury.
+ *
+ * Redirect: set `NEXT_PUBLIC_PLATFORM_FEE_WALLET` to any pubkey you control.
+ * Prefer a dedicated treasury (not the hot trading / EXC key). Changing the env
+ * redirects future overlay fees with no on-chain upgrade — Omnipair itself is untouched.
+ *
+ * Note: this is a client overlay. Users calling Omnipair directly bypass it.
  */
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
 
@@ -9,6 +15,7 @@ export const PLATFORM_FEE_BPS = 30;
 export const PLATFORM_FEE_PCT_LABEL = "0.30%";
 
 export function platformFeeRecipient(): PublicKey | null {
+  // Prefer dedicated fee wallet; fall back to platform authority only if unset.
   const raw =
     process.env.NEXT_PUBLIC_PLATFORM_FEE_WALLET?.trim() ||
     process.env.NEXT_PUBLIC_PLATFORM_AUTHORITY?.trim() ||
@@ -19,6 +26,11 @@ export function platformFeeRecipient(): PublicKey | null {
   } catch {
     return null;
   }
+}
+
+/** True when fee destination is explicitly set (not falling back to authority). */
+export function platformFeeWalletIsExplicit(): boolean {
+  return Boolean(process.env.NEXT_PUBLIC_PLATFORM_FEE_WALLET?.trim());
 }
 
 /** Lamports skimmed from a SOL notional (UI SOL → lamports). */

@@ -71,14 +71,17 @@ export function riskFromOnChainPosition(params: {
 
   const isShort = debtProject > 0 || (collSol > 0 && debtSol <= 0 && collProject <= 0);
 
-  // Use locked liquidation CF when present (bps on the collateral side that backs debt).
-  // For project collateral → debt SOL, CF sits on collateral0 or 1 matching project.
-  const cfBps = projectIs0
-    ? // debt is token1 (SOL) → liquidation cf stored against collateral0
-      0
-    : 0;
-  void cfBps;
-  const liquidationLtv = fallbackLiqLtv;
+  // Use locked liquidation CF from the position when present (Omnipair stores bps per side).
+  const lockedBps = isShort
+    ? // Short: SOL collateral backs project debt
+      NATIVE_MINT.equals(pos.token0)
+        ? pos.collateral0LiquidationCfBps
+        : pos.collateral1LiquidationCfBps
+    : projectIs0
+      ? pos.collateral0LiquidationCfBps
+      : pos.collateral1LiquidationCfBps;
+  const liquidationLtv =
+    lockedBps > 0 ? Math.min(1, lockedBps / 10_000) : fallbackLiqLtv;
 
   let collateralUsd = 0;
   let debtUsd = 0;

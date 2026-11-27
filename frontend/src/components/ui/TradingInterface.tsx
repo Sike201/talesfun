@@ -548,7 +548,7 @@ function formatSwapAmountInput(n: number, maxDecimals: number): string {
   return floored.toFixed(maxDecimals).replace(/\.?0+$/, "");
 }
 
-const SOL_TOKEN_ICON = "/icons/sol.svg";
+const SOL_TOKEN_ICON = "/icons/sol.svg?v=2";
 
 function SwapTokenChip({
   symbol,
@@ -560,24 +560,27 @@ function SwapTokenChip({
   const isSol = symbol.toUpperCase() === "SOL";
   const resolvedIcon = iconUrl?.trim() || (isSol ? SOL_TOKEN_ICON : null);
   return (
-    <span className="inline-flex max-w-[11rem] shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#0a0a0a] py-1.5 pl-1.5 pr-2.5 text-[12px] font-semibold text-white sm:max-w-none sm:text-[13px]">
-      <span className="relative size-6 shrink-0 overflow-hidden rounded-full bg-white/10">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-[#0a0a0a] py-1 pl-1 pr-2 text-[11px] font-semibold leading-none text-white">
+      <span className="relative flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10">
         {resolvedIcon ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={resolvedIcon}
             alt=""
-            width={24}
-            height={24}
-            className="size-6 object-cover"
+            width={16}
+            height={16}
+            className={cn(
+              "size-4",
+              isSol ? "object-contain p-[1px]" : "object-cover"
+            )}
           />
         ) : (
-          <span className="flex size-6 items-center justify-center text-[9px] font-bold text-white/50">
+          <span className="text-[7px] font-bold text-white/50">
             {symbol.slice(0, 2).toUpperCase()}
           </span>
         )}
       </span>
-      <span className="min-w-0 truncate" title={symbol}>
+      <span className="whitespace-nowrap" title={symbol}>
         {symbol}
       </span>
     </span>
@@ -611,6 +614,7 @@ function SwapPanel({
   const [amount, setAmount] = useState("");
   const [slippage, setSlippage] = useState("8");
   const [loading, setLoading] = useState(false);
+  const [flipTurns, setFlipTurns] = useState(0);
 
   const priceSol =
     spotPriceSol != null && spotPriceSol > 0 ? spotPriceSol : token.currentPrice;
@@ -621,8 +625,7 @@ function SwapPanel({
       ? num > 0 && priceSol > 0 ? Math.floor(num / priceSol) : 0
       : num * priceSol;
 
-  const displayTicker =
-    token.ticker.length > 8 ? token.ticker.slice(0, 7) + "…" : token.ticker;
+  const displayTicker = token.ticker;
   const projectIcon = token.imageUrl?.trim() || null;
 
   const applyOmnipairQuickPercent = (pct: number) => {
@@ -769,6 +772,7 @@ function SwapPanel({
       : "—";
 
   const flipSide = () => {
+    setFlipTurns(n => n + 1);
     setSide(s => (s === "buy" ? "sell" : "buy"));
     setAmount("");
   };
@@ -777,13 +781,13 @@ function SwapPanel({
   const receiveIcon = side === "buy" ? projectIcon : SOL_TOKEN_ICON;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2.5">
       <div className="flex flex-col">
-        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-[12px] font-medium text-white/45">You sell</span>
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-white/45">You sell</span>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] tabular-nums text-white/35">
+              <span className="text-[10px] tabular-nums text-white/35">
                 {sellBalLabel}
               </span>
               <button
@@ -799,18 +803,18 @@ function SwapPanel({
               </button>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <input
               type="number"
               value={amount}
               onChange={e => setAmount(e.target.value)}
               placeholder="0"
               aria-label="You sell"
-              className="min-w-0 flex-1 bg-transparent text-[26px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent text-[22px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
             />
             <SwapTokenChip symbol={sellToken} iconUrl={sellIcon} />
           </div>
-          <div className="mt-2.5 flex gap-1">
+          <div className="mt-1.5 flex gap-1">
             {([25, 50, 100] as const).map(pct => (
               <button
                 key={pct}
@@ -820,7 +824,7 @@ function SwapPanel({
                   if (omnipairPoolSnapshot) applyOmnipairQuickPercent(pct);
                   else setAmount(String(pct));
                 }}
-                className="rounded-md px-2 py-1 text-[10px] font-semibold text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/75 disabled:pointer-events-none disabled:opacity-40"
+                className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/75 disabled:pointer-events-none disabled:opacity-40"
               >
                 {pct}%
               </button>
@@ -829,29 +833,34 @@ function SwapPanel({
         </div>
 
         {/* Flip sits in the gap — not stacked over field content */}
-        <div className="relative z-10 -my-3 flex justify-center">
+        <div className="relative z-10 -my-2.5 flex justify-center">
           <button
             type="button"
             aria-label={`Flip tokens: sell ${receiveToken}, receive ${sellToken}`}
             disabled={loading}
             onClick={flipSide}
-            className="flex size-9 items-center justify-center rounded-full border border-white/12 bg-[#121212] text-white/65 ring-4 ring-[#0c0c0c] transition-colors hover:border-white/25 hover:text-white disabled:opacity-40"
+            className="flex size-7 items-center justify-center rounded-full border border-white/12 bg-[#121212] text-white/65 ring-4 ring-[#0c0c0c] transition-colors hover:border-white/25 hover:text-white disabled:opacity-40"
           >
-            <ArrowDownUp size={14} strokeWidth={2.25} />
+            <ArrowDownUp
+              size={12}
+              strokeWidth={2.25}
+              className="transition-transform duration-300 ease-out"
+              style={{ transform: `rotate(${flipTurns * 180}deg)` }}
+            />
           </button>
         </div>
 
-        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-[12px] font-medium text-white/45">You receive</span>
-            <span className="text-[11px] text-white/30">
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-white/45">You receive</span>
+            <span className="text-[10px] text-white/30">
               {omnipairPoolSnapshot ? "Omnipair spot" : "Estimate"}
             </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <span
               aria-label="You receive"
-              className="min-w-0 flex-1 truncate text-[26px] font-semibold tracking-tight text-white/90"
+              className="min-w-0 flex-1 truncate text-[22px] font-semibold tracking-tight text-white/90"
             >
               {receiveEstimate}
             </span>
@@ -883,7 +892,7 @@ function SwapPanel({
             (omnipairPoolSnapshot != null && walletBalLoading)
           }
           aria-busy={loading}
-          className="w-full rounded-xl bg-[#ff5a1f] py-3.5 text-sm font-semibold text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
+          className="w-full rounded-xl bg-[#ff5a1f] py-3 text-sm font-semibold text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading && omnipairPoolSnapshot
             ? "Swapping…"
@@ -987,8 +996,7 @@ function LeveragePanel({
   const maxMargin = marginCap.maxMargin;
   const isOneX = marginCap.borrowFraction < 1e-8;
 
-  const displayTicker =
-    token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
+  const displayTicker = token.ticker;
 
   // Keep selection inside pool max when depth / CF changes.
   useEffect(() => {
@@ -1207,15 +1215,13 @@ function LeveragePanel({
         </div>
       ) : null}
 
-      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="text-[12px] font-medium text-white/45">
-            {direction === "long" ? "Margin" : "Margin"}
-          </span>
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <span className="text-[11px] font-medium text-white/45">Margin</span>
           {Number.isFinite(maxMargin) && maxMargin > 0 ? (
             <button
               type="button"
-              className="text-[11px] font-semibold tabular-nums text-white/50 hover:text-white"
+              className="text-[10px] font-semibold tabular-nums text-white/50 hover:text-white"
               onClick={() => {
                 maxPinnedRef.current = true;
                 setSize(
@@ -1232,7 +1238,7 @@ function LeveragePanel({
             </button>
           ) : null}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <input
             type="number"
             value={size}
@@ -1241,11 +1247,11 @@ function LeveragePanel({
               setSize(e.target.value);
             }}
             placeholder="0"
-            className="min-w-0 flex-1 bg-transparent text-[26px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-[22px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
           />
           {marginChip}
         </div>
-        <p className="mt-2 text-[11px] text-white/35">
+        <p className="mt-1 text-[10px] text-white/35">
           {direction === "long"
             ? `Balance ${walletTokens > 0 ? formatNumberCompact(walletTokens) : "0"} ${displayTicker}`
             : `Balance ${walletSol > 0 ? walletSol.toFixed(3) : "0"} SOL`}
@@ -1296,7 +1302,7 @@ function LeveragePanel({
           onClick={handleOpen}
           disabled={loading || !size || !omnipairPoolSnapshot}
           className={cn(
-            "w-full rounded-xl py-3.5 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
+            "w-full rounded-xl py-3 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
             direction === "long"
               ? "bg-emerald-500 text-[#04140a] hover:brightness-105"
               : "bg-red-500 text-white hover:brightness-105"
@@ -1435,8 +1441,7 @@ function BorrowPanel({
     collNum > 0 && liqPct > 0 ? (borrowSol / collNum) / (liqPct / 100) : 0;
   const liqPriceUsd = liqSpotSol * usd;
 
-  const displayTicker =
-    token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
+  const displayTicker = token.ticker;
 
   const handleBorrow = async () => {
     if (!connected || !collateral || !omnipairPoolSnapshot) {
@@ -1539,24 +1544,24 @@ function BorrowPanel({
         <span className="text-[11px] text-white/35">Isolated</span>
       </div>
 
-      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-[12px] font-medium text-white/45">You borrow</span>
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-white/45">You borrow</span>
         </div>
-        <div className="flex items-center gap-3">
-          <p className="min-w-0 flex-1 text-[26px] font-semibold tabular-nums tracking-tight text-white">
+        <div className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 text-[22px] font-semibold tabular-nums tracking-tight text-white">
             {collNum > 0 ? borrowSol.toFixed(6) : "0"}
           </p>
           <SwapTokenChip symbol="SOL" iconUrl={SOL_TOKEN_ICON} />
         </div>
-        <p className="mt-2 text-[11px] tabular-nums text-white/35">
+        <p className="mt-1 text-[10px] tabular-nums text-white/35">
           {collNum > 0 ? `≈ ${formatUSD(borrowSol * usd)}` : "—"}
         </p>
       </div>
 
-      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-[12px] font-medium text-white/45">Collateral</span>
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-medium text-white/45">Collateral</span>
           <button
             type="button"
             disabled={!(maxCollateral > 0)}
@@ -1567,22 +1572,22 @@ function BorrowPanel({
                   : String(Number(maxCollateral.toPrecision(6)))
               )
             }
-            className="text-[11px] font-semibold text-white/50 hover:text-white disabled:opacity-40"
+            className="text-[10px] font-semibold text-white/50 hover:text-white disabled:opacity-40"
           >
             Max
           </button>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <input
             type="number"
             value={collateral}
             onChange={e => setCollateral(e.target.value)}
             placeholder="0"
-            className="min-w-0 flex-1 bg-transparent text-[26px] font-semibold tabular-nums tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-[22px] font-semibold tabular-nums tracking-tight text-white placeholder:text-white/20 focus:outline-none"
           />
           <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
         </div>
-        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-white/35">
+        <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/35">
           <span className="tabular-nums">
             {collNum > 0 ? `≈ ${formatUSD(collValueUsd)}` : "—"}
           </span>
@@ -1610,7 +1615,7 @@ function BorrowPanel({
           type="button"
           onClick={handleBorrow}
           disabled={loading || !(collNum > 0) || !(borrowSol > 0) || !omnipairPoolSnapshot}
-          className="w-full rounded-lg bg-[#f4f4f5] py-3.5 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
+          className="w-full rounded-lg bg-[#f4f4f5] py-3 text-sm font-semibold text-[#0a0a0a] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {loading
             ? "Borrowing…"
