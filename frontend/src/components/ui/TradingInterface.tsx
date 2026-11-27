@@ -767,6 +767,7 @@ function LeveragePanel({
     initialDirection ?? "long"
   );
   const [size, setSize] = useState("");
+  // Slider is integer 1–5x; on thin pools borrow is CF-capped (~0.22 → ~1.3x effective).
   const [leverage, setLeverage] = useState(2);
   const [loading, setLoading] = useState(false);
   const { solBalanceLamports, tokenBalanceDisplay } = useWalletBalances(
@@ -781,13 +782,15 @@ function LeveragePanel({
   const usd = solUsd ?? 140;
   const currentPriceUSD = spot * usd;
   const positionSize = sizeNum * leverage;
-  // Thin-pool impact-aware CF (~22%); protocol hard-cap 85% → max lev ≈ 1/(1−CF).
+  // Thin-pool impact-aware CF (~22%); protocol hard-cap 85% → meaningful max lev ≈ 1/(1−CF).
+  // Higher UI leverage still works: lending clamps borrow to CF (same effective size).
   const thinCf = 0.22;
   const maxLevFromCf = Math.min(MAX_LEVERAGE_UI, 1 / (1 - thinCf));
+  const effectiveLeverage = Math.min(leverage, MAX_LEVERAGE_UI);
   const liqPrice =
     direction === "long"
-      ? currentPriceUSD * (1 - 1 / Math.max(leverage, 1.1) + 0.05)
-      : currentPriceUSD * (1 + 1 / Math.max(leverage, 1.1) - 0.05);
+      ? currentPriceUSD * (1 - 1 / Math.max(effectiveLeverage, 1.1) + 0.05)
+      : currentPriceUSD * (1 + 1 / Math.max(effectiveLeverage, 1.1) - 0.05);
 
   const reserveSol = omnipairPoolSnapshot
     ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
@@ -824,12 +827,6 @@ function LeveragePanel({
       );
       return;
     }
-    if (leverage > maxLevFromCf + 0.01) {
-      toast.error(
-        `Max practical leverage on thin pools is ~${maxLevFromCf.toFixed(1)}x (impact-aware CF)`
-      );
-      return;
-    }
     setLoading(true);
     try {
       const wallet = {
@@ -837,17 +834,22 @@ function LeveragePanel({
         signTransaction: walletAdapter.signTransaction!.bind(walletAdapter),
         signAllTransactions: walletAdapter.signAllTransactions!.bind(walletAdapter),
       } as AnchorWallet;
+      const levUsed = Math.min(leverage, MAX_LEVERAGE_UI);
       const { sigs } = await sendOmnipairLeverageStepTx({
         connection,
         wallet,
         snapshot: omnipairPoolSnapshot,
         direction,
         marginUi: margin,
-        leverage: Math.min(leverage, MAX_LEVERAGE_UI),
+        leverage: levUsed,
         slippagePercent: 8,
       });
+      const cfNote =
+        levUsed > maxLevFromCf + 0.05
+          ? ` · borrow CF-capped (~${maxLevFromCf.toFixed(1)}x effective)`
+          : "";
       toast.success(
-        `${direction === "long" ? "Long" : "Short"} submitted (${sigs.length} txs)`
+        `${direction === "long" ? "Long" : "Short"} ${levUsed.toFixed(1)}x submitted (${sigs.length} txs)${cfNote}`
       );
       const primarySig = sigs[sigs.length - 1] || sigs[0];
       if (primarySig && walletAdapter.publicKey) {
@@ -907,7 +909,7 @@ function LeveragePanel({
           Isolated
         </span>
         <span className="text-[10px] text-white/40">
-          Max ~{maxLevFromCf.toFixed(1)}x · CF impact-aware
+          Borrow CF-capped (~{maxLevFromCf.toFixed(1)}x effective on thin pools)
         </span>
       </div>
 

@@ -268,11 +268,12 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
   if (!(spot > 0)) throw new Error("Pool spot unavailable");
 
   const collValueSol = collateralTokenUi * spot;
+  // Thin-pool impact-aware CF is often ≪ 22%; start conservative and back off.
   const borrowSolUi =
     params.borrowSolUi != null && params.borrowSolUi > 0
       ? params.borrowSolUi
-      : collValueSol * 0.22;
-  const borrowRaw = BigInt(Math.floor(borrowSolUi * 1e9));
+      : collValueSol * 0.12;
+  let borrowRaw = BigInt(Math.floor(borrowSolUi * 1e9));
   if (borrowRaw <= BigInt(0)) throw new Error("Borrow amount too small");
 
   const collateralSig = await sendOmnipairAddCollateralTx({
@@ -283,13 +284,46 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
     amountRaw: collRaw,
   });
 
-  const borrowSig = await sendOmnipairBorrowTx({
-    connection,
-    wallet,
-    snapshot,
-    borrowMint: NATIVE_MINT,
-    amountRaw: borrowRaw,
-  });
+  const isBorrowPowerErr = (e: unknown) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    return (
+      msg.includes("BorrowingPowerExceeded") ||
+      msg.includes("0x177a") ||
+      msg.includes("6010") ||
+      msg.includes("DebtMathOverflow") ||
+      msg.includes("0x179c") ||
+      msg.includes("6044")
+    );
+  };
+
+  let borrowSig = "";
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (borrowRaw <= BigInt(0)) break;
+    try {
+      borrowSig = await sendOmnipairBorrowTx({
+        connection,
+        wallet,
+        snapshot,
+        borrowMint: NATIVE_MINT,
+        amountRaw: borrowRaw,
+      });
+      lastErr = undefined;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (!isBorrowPowerErr(e)) throw e;
+      borrowRaw = (borrowRaw * BigInt(50)) / BigInt(100);
+      console.warn(
+        `[omnipair:borrow] borrow backoff — retry @ attempt ${attempt + 1}`
+      );
+    }
+  }
+  if (!borrowSig) {
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error("BorrowingPowerExceeded after backoff");
+  }
 
   return { collateralSig, borrowSig };
 }
@@ -335,18 +369,24 @@ export async function sendOmnipairLeverageStepTx(params: {
     return (
       msg.includes("BorrowingPowerExceeded") ||
       msg.includes("0x177a") ||
-      msg.includes("6010")
+      msg.includes("6010") ||
+      msg.includes("DebtMathOverflow") ||
+      msg.includes("0x179c") ||
+      msg.includes("6044")
     );
   };
 
-  /** Step down borrow size until it clears impact-aware CF (thin-pool safe). */
+  /** Step down borrow size until it clears impact-aware CF / debt math (thin-pool safe). */
   const borrowWithBackoff = async (
     borrowMint: PublicKey,
     initialRaw: bigint
   ): Promise<{ sig: string; usedRaw: bigint }> => {
-    let amount = initialRaw;
+    // Start smaller for project-token borrows (short path) — debt share math overflows on thin pools.
+    let amount = borrowMint.equals(NATIVE_MINT)
+      ? initialRaw
+      : (initialRaw * BigInt(35)) / BigInt(100);
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
       if (amount <= BigInt(0)) break;
       try {
         const sig = await sendOmnipairBorrowTx({
@@ -360,15 +400,15 @@ export async function sendOmnipairLeverageStepTx(params: {
       } catch (e) {
         lastErr = e;
         if (!isBorrowPowerErr(e)) throw e;
-        amount = (amount * BigInt(55)) / BigInt(100); // keep ~55% of prior try
+        amount = (amount * BigInt(50)) / BigInt(100);
         console.warn(
-          `[omnipair:leverage] BorrowingPowerExceeded — retry @ ${(Number(amount) / Number(initialRaw || BigInt(1)) * 100).toFixed(0)}%`
+          `[omnipair:leverage] borrow backoff — retry @ ${(Number(amount) / Number(initialRaw || BigInt(1)) * 100).toFixed(0)}%`
         );
       }
     }
     throw lastErr instanceof Error
       ? lastErr
-      : new Error("BorrowingPowerExceeded after backoff");
+      : new Error("Borrow failed after backoff");
   };
 
   if (direction === "long") {
@@ -411,7 +451,9 @@ export async function sendOmnipairLeverageStepTx(params: {
         amountRaw: collRaw,
       })
     );
-    const borrowSolValue = marginUi * Math.min(borrowFraction, safeCf) * 0.9;
+    // Shorts sell borrowed project tokens into the pool — keep borrow smaller than longs.
+    const shortCf = Math.min(safeCf, 0.14);
+    const borrowSolValue = marginUi * Math.min(borrowFraction, shortCf) * 0.85;
     const borrowTokenUi = borrowSolValue / spot;
     if (borrowTokenUi > 0) {
       const borrowRaw = BigInt(
@@ -424,15 +466,42 @@ export async function sendOmnipairLeverageStepTx(params: {
       sigs.push(sig);
       const usedTokenUi =
         Number(usedRaw) / 10 ** snapshot.projectTokenDecimals;
-      const swap = await sendOmnipairSwapTx({
-        connection,
-        wallet,
-        snapshot,
-        side: "sell",
-        amountUi: usedTokenUi * 0.99,
-        slippagePercent,
-      });
-      sigs.push(swap.signature);
+      // Sell less than borrowed + wider slippage — thin pools blow past CPMM minOut.
+      const sellUi = usedTokenUi * 0.85;
+      const shortSlip = Math.max(slippagePercent, 20);
+      let swapSig = "";
+      let lastSwapErr: unknown;
+      let attemptUi = sellUi;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (!(attemptUi > 0)) break;
+        try {
+          const swap = await sendOmnipairSwapTx({
+            connection,
+            wallet,
+            snapshot,
+            side: "sell",
+            amountUi: attemptUi,
+            slippagePercent: shortSlip + attempt * 5,
+          });
+          swapSig = swap.signature;
+          lastSwapErr = undefined;
+          break;
+        } catch (e) {
+          lastSwapErr = e;
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!/0x1781|6017|SlippageExceeded/i.test(msg)) throw e;
+          attemptUi *= 0.55;
+          console.warn(
+            `[omnipair:leverage] short sell SlippageExceeded — retry @ ${(attemptUi / sellUi * 100).toFixed(0)}%`
+          );
+        }
+      }
+      if (!swapSig) {
+        throw lastSwapErr instanceof Error
+          ? lastSwapErr
+          : new Error("Short unwind swap failed after backoff");
+      }
+      sigs.push(swapSig);
     }
   }
 

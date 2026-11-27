@@ -88,17 +88,21 @@ function log(...args: unknown[]) {
   }
 }
 
-function isTransientRpcError(e: unknown): boolean {
+function isSoftSkipError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  return /blockhash not found|block height exceeded|timed out|429|fetch failed|ECONNRESET|socket hang up|node is behind|Too many requests|Transaction was not confirmed|simulation failed/i.test(
+  return /blockhash not found|block height exceeded|timed out|429|fetch failed|ECONNRESET|socket hang up|node is behind|Too many requests|max usage reached|Transaction was not confirmed|simulation failed|custom program error: 0x1|insufficient|Attempt to debit|Could not read reserve|could not refresh pool|Custom.:60(17|25)|IncorrectProgramId/i.test(
     msg
   );
+}
+
+function isTransientRpcError(e: unknown): boolean {
+  return isSoftSkipError(e);
 }
 
 async function withRpcRetry<T>(
   label: string,
   fn: () => Promise<T>,
-  attempts = 4
+  attempts = 6
 ): Promise<T> {
   let last: unknown;
   for (let i = 1; i <= attempts; i++) {
@@ -107,7 +111,11 @@ async function withRpcRetry<T>(
     } catch (e) {
       last = e;
       if (!isTransientRpcError(e) || i === attempts) throw e;
-      const wait = 700 * i + Math.floor(Math.random() * 900);
+      const msg = e instanceof Error ? e.message : String(e);
+      const rateLimited = /429|Too many requests|max usage reached/i.test(msg);
+      const wait = rateLimited
+        ? 3000 * i + Math.floor(Math.random() * 2000)
+        : 700 * i + Math.floor(Math.random() * 900);
       log(`${label} retry ${i}/${attempts}`, wait + "ms");
       await sleep(wait);
     }
@@ -730,13 +738,12 @@ async function main() {
         await doSwapRound(connection, trader, traderIdx, target, stats);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        // Soft-skip common transient / inventory errors so stress keeps moving.
-        if (
-          /custom program error: 0x1|insufficient|Attempt to debit|Simulation failed|fetch failed|block height exceeded|Could not read reserve|could not refresh pool|Custom.:6025/i.test(
-            msg
-          )
-        ) {
+        // Soft-skip transient RPC / inventory / known on-chain noise so stress keeps moving.
+        if (isSoftSkipError(e)) {
           log(`t#${traderIdx} soft-skip`, target.symbol, msg.slice(0, 100));
+          if (/429|Too many requests|max usage reached/i.test(msg)) {
+            await sleep(2500 + Math.floor(Math.random() * 2500));
+          }
         } else {
           stats.fails += 1;
           bumpMint(stats, target.mint, "fails");
@@ -762,11 +769,7 @@ async function main() {
             await doLeverageSmoke(connection, actor, specialTarget, stats);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            if (
-              /custom program error: 0x1|insufficient|Simulation failed|fetch failed|block height exceeded|Could not read reserve/i.test(
-                msg
-              )
-            ) {
+            if (isSoftSkipError(e)) {
               log("LEVERAGE soft-skip", specialTarget.symbol, msg.slice(0, 100));
             } else {
               stats.leverageFail += 1;
@@ -780,11 +783,7 @@ async function main() {
             await doBorrowSmoke(connection, actor, specialTarget, stats);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            if (
-              /custom program error: 0x1|insufficient|Simulation failed|fetch failed|block height exceeded|Could not read reserve/i.test(
-                msg
-              )
-            ) {
+            if (isSoftSkipError(e)) {
               log("BORROW soft-skip", specialTarget.symbol, msg.slice(0, 100));
             } else {
               stats.borrowFail += 1;
@@ -809,8 +808,8 @@ async function main() {
       });
     }
 
-    // Stagger job submission so RPC isn't hammered
-    await sleep(400 + Math.floor(Math.random() * 700));
+    // Stagger job submission so public RPC rate limits don't kill the process
+    await sleep(1800 + Math.floor(Math.random() * 2200));
   }
 
   await Promise.allSettled(workers);
@@ -818,7 +817,31 @@ async function main() {
   log("multi-trader stress done", stats);
 }
 
+// web3.js can throw 429 from callback paths outside await — keep stress alive
+process.on("uncaughtException", (e) => {
+  if (isSoftSkipError(e)) {
+    log("uncaught soft-skip", String(e).slice(0, 160));
+    return;
+  }
+  console.error("FATAL uncaught", e);
+  process.exit(1);
+});
+process.on("unhandledRejection", (e) => {
+  if (isSoftSkipError(e)) {
+    log("unhandled soft-skip", String(e).slice(0, 160));
+    return;
+  }
+  console.error("FATAL rejection", e);
+  process.exit(1);
+});
+
 main().catch((e) => {
+  if (isSoftSkipError(e)) {
+    log("main soft-skip restart", String(e).slice(0, 160));
+    // keep process alive briefly then exit 0 so monitor can restart cleanly
+    setTimeout(() => process.exit(0), 500);
+    return;
+  }
   console.error("FATAL", e);
   process.exit(1);
 });

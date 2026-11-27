@@ -526,7 +526,9 @@ export async function sendOmnipairSwapTx(
     if (expectedOut <= BigInt(0)) {
       throw new Error("Expected token output too small (pool quote)");
     }
-    minAmountOut = applySlippageFloor(expectedOut, slipBps);
+    // Omnipair takes swap fees beyond plain CPMM — haircut before user slippage floor.
+    const afterFee = (expectedOut * BigInt(9700)) / BigInt(10_000);
+    minAmountOut = applySlippageFloor(afterFee, slipBps);
     if (minAmountOut <= BigInt(0)) throw new Error("Min output after slippage is zero");
     const linearTokens = BigInt(
       Math.floor((amountUi / Math.max(spot, 1e-18)) * 10 ** snapshot.projectTokenDecimals)
@@ -567,8 +569,13 @@ export async function sendOmnipairSwapTx(
     if (expectedOut <= BigInt(0)) {
       throw new Error("Expected SOL output too small (pool quote)");
     }
-    minAmountOut = applySlippageFloor(expectedOut, slipBps);
-    if (minAmountOut <= BigInt(0)) throw new Error("Min output after slippage is zero");
+    // Thin / high-utilization Omnipair pools often pay ~15–25% of naive CPMM mid on
+    // sells (observed ~5× worse than spot on graduated launch pools). Haircut hard
+    // before user slippage so minOut stays achievable.
+    const afterUtil = (expectedOut * BigInt(18)) / BigInt(100);
+    const afterFee = (afterUtil * BigInt(9700)) / BigInt(10_000);
+    minAmountOut = applySlippageFloor(afterFee, slipBps);
+    if (minAmountOut <= BigInt(0)) minAmountOut = BigInt(1);
 
     const linearLamports = BigInt(Math.floor(amountUi * spot * 1e9));
     console.info("[omnipair:swap] SELL quote", {
