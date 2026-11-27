@@ -3,7 +3,13 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Token } from "@/types";
-import { formatUSD, shortenAddress, timeAgo, calcBondingCurveProgress } from "@/lib/utils";
+import {
+  formatUSD,
+  formatSolPerTokenPrice,
+  shortenAddress,
+  timeAgo,
+  calcBondingCurveProgress,
+} from "@/lib/utils";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -108,7 +114,9 @@ export default function TokenCard({ token, variant = "grid" }: Props) {
           ) : (
             <div className="text-right">
               <p className="text-[10px] text-gray-400 uppercase tracking-wider">Price</p>
-              <p className="text-sm font-semibold text-gray-900">{token.currentPrice.toFixed(8)}</p>
+              <p className="text-sm font-semibold tabular-nums text-gray-900">
+                {formatSolPerTokenPrice(token.currentPrice)}
+              </p>
             </div>
           )}
           <div className="text-right">

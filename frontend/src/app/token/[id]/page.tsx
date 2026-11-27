@@ -11,6 +11,7 @@ import { DEMO_TOKEN, isDemoMarketMint } from "@/lib/demoMarket";
 import {
   formatUSD, formatNumber, shortenAddress, timeAgo, calcBondingCurveProgress,
   formatSolPerTokenPrice,
+  formatTokenPriceUsd,
 } from "@/lib/utils";
 import {
   applyTokenMarketCapUsd,
@@ -812,8 +813,10 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           </div>
           <div>
             <p className="token-stat-label">Price</p>
-            <p className="token-stat-value">
-              {priceUSD != null ? `$${priceUSD.toFixed(6)}` : `${displayPriceSol.toFixed(8)} SOL`}
+            <p className="token-stat-value tabular-nums">
+              {priceUSD != null
+                ? formatTokenPriceUsd(priceUSD)
+                : formatSolPerTokenPrice(displayPriceSol)}
             </p>
           </div>
           <div>

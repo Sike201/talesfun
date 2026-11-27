@@ -6,7 +6,7 @@ import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { AlertTriangle, ArrowDownUp } from "lucide-react";
 import { Token } from "@/types";
-import { cn, formatUSD } from "@/lib/utils";
+import { cn, formatUSD, formatSolPerTokenPrice, formatTokenPriceUsd } from "@/lib/utils";
 import toast from "react-hot-toast";
 import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
@@ -636,7 +636,7 @@ function SwapPanel({
   const rateLabel =
     priceSol > 0
       ? side === "buy"
-        ? `1 ${displayTicker} ≈ ${priceSol.toExponential(3)} SOL`
+        ? `1 ${displayTicker} ≈ ${formatSolPerTokenPrice(priceSol)}`
         : `1 SOL ≈ ${(1 / priceSol).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${displayTicker}`
       : "—";
 
@@ -1020,7 +1020,7 @@ function LeveragePanel({
             />
             <TalesTradeDetailsRow
               label="Entry → mark"
-              value={`${openPos.entrySpotSol.toExponential(3)} → ${spot > 0 ? spot.toExponential(3) : "—"} SOL`}
+              value={`${formatSolPerTokenPrice(openPos.entrySpotSol).replace(/ SOL$/, "")} → ${spot > 0 ? formatSolPerTokenPrice(spot) : "—"}`}
             />
           </div>
         </div>
@@ -1063,11 +1063,11 @@ function LeveragePanel({
         />
         <TalesTradeDetailsRow
           label="Spot"
-          value={spot > 0 ? `${spot.toExponential(3)} SOL` : "—"}
+          value={spot > 0 ? formatSolPerTokenPrice(spot) : "—"}
         />
         <TalesTradeDetailsRow
           label="Est. liquidation"
-          value={sizeNum > 0 ? `$${liqPrice.toFixed(6)}` : "—"}
+          value={sizeNum > 0 ? formatTokenPriceUsd(liqPrice) : "—"}
         />
         <TalesTradeDetailsRow
           label="Position value"
