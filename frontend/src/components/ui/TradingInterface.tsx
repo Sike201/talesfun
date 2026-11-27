@@ -459,6 +459,40 @@ function formatSwapAmountInput(n: number, maxDecimals: number): string {
   return floored.toFixed(maxDecimals).replace(/\.?0+$/, "");
 }
 
+const SOL_TOKEN_ICON =
+  "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png";
+
+function SwapTokenChip({
+  symbol,
+  iconUrl,
+}: {
+  symbol: string;
+  iconUrl?: string | null;
+}) {
+  const label = symbol.length > 8 ? `${symbol.slice(0, 7)}…` : symbol;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-2 rounded-full border border-white/10 bg-[#0a0a0a] py-1.5 pl-1.5 pr-2.5 text-[13px] font-semibold text-white">
+      <span className="relative size-6 overflow-hidden rounded-full bg-white/10">
+        {iconUrl?.trim() ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={iconUrl}
+            alt=""
+            width={24}
+            height={24}
+            className="size-6 object-cover"
+          />
+        ) : (
+          <span className="flex size-6 items-center justify-center text-[9px] font-bold text-white/50">
+            {label.slice(0, 2).toUpperCase()}
+          </span>
+        )}
+      </span>
+      {label}
+    </span>
+  );
+}
+
 /* ─── Swap ───────────────────────────────────────────────────────── */
 
 function SwapPanel({
@@ -497,7 +531,8 @@ function SwapPanel({
       : num * priceSol;
 
   const displayTicker =
-    token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
+    token.ticker.length > 8 ? token.ticker.slice(0, 7) + "…" : token.ticker;
+  const projectIcon = token.imageUrl?.trim() || null;
 
   const applyOmnipairQuickPercent = (pct: number) => {
     if (!omnipairPoolSnapshot) return;
@@ -646,10 +681,12 @@ function SwapPanel({
     setAmount("");
   };
 
+  const sellIcon = side === "buy" ? SOL_TOKEN_ICON : projectIcon;
+  const receiveIcon = side === "buy" ? projectIcon : SOL_TOKEN_ICON;
+
   return (
     <div className="space-y-3">
-      {/* Omnipair-style: You sell → flip → You receive */}
-      <div className="relative space-y-2">
+      <div className="flex flex-col">
         <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="text-[12px] font-medium text-white/45">You sell</span>
@@ -677,13 +714,11 @@ function SwapPanel({
               onChange={e => setAmount(e.target.value)}
               placeholder="0"
               aria-label="You sell"
-              className="min-w-0 flex-1 bg-transparent text-[28px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent text-[26px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
             />
-            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-black/40 px-2.5 py-1.5 text-[13px] font-semibold text-white">
-              {sellToken}
-            </span>
+            <SwapTokenChip symbol={sellToken} iconUrl={sellIcon} />
           </div>
-          <div className="mt-2 flex gap-1.5">
+          <div className="mt-2.5 flex gap-1">
             {([25, 50, 100] as const).map(pct => (
               <button
                 key={pct}
@@ -701,15 +736,16 @@ function SwapPanel({
           </div>
         </div>
 
-        <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
+        {/* Flip sits in the gap — not stacked over field content */}
+        <div className="relative z-10 -my-3 flex justify-center">
           <button
             type="button"
             aria-label={`Flip tokens: sell ${receiveToken}, receive ${sellToken}`}
             disabled={loading}
             onClick={flipSide}
-            className="flex size-9 items-center justify-center rounded-full border border-white/15 bg-[#141414] text-white/70 shadow-lg transition-colors hover:border-white/30 hover:text-white disabled:opacity-40"
+            className="flex size-9 items-center justify-center rounded-full border border-white/12 bg-[#121212] text-white/65 ring-4 ring-[#0c0c0c] transition-colors hover:border-white/25 hover:text-white disabled:opacity-40"
           >
-            <ArrowDownUp size={15} />
+            <ArrowDownUp size={14} strokeWidth={2.25} />
           </button>
         </div>
 
@@ -723,21 +759,20 @@ function SwapPanel({
           <div className="flex items-center gap-3">
             <span
               aria-label="You receive"
-              className="min-w-0 flex-1 truncate text-[28px] font-semibold tracking-tight text-white/90"
+              className="min-w-0 flex-1 truncate text-[26px] font-semibold tracking-tight text-white/90"
             >
               {receiveEstimate}
             </span>
-            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-black/40 px-2.5 py-1.5 text-[13px] font-semibold text-white">
-              {receiveToken}
-            </span>
+            <SwapTokenChip symbol={receiveToken} iconUrl={receiveIcon} />
           </div>
         </div>
       </div>
 
-      <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+      <div className="space-y-0 px-0.5 py-0.5">
         <TalesTradeDetailsRow label="Rate" value={rateLabel} />
         <TalesTradeDetailsRow label="Swap fee" value="0.30%" />
-        <div className="mt-1 flex justify-end border-t border-white/[0.06] pt-2">
+        <div className="flex items-center justify-between gap-3 py-1">
+          <span className="text-[11px] text-white/40">Max slippage</span>
           <SlippageButton value={slippage} onChange={setSlippage} />
         </div>
       </div>
