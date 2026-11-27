@@ -23,6 +23,7 @@ import {
   clampLeverage,
   MIN_LEVERAGE,
   poolMaxLeverage,
+  poolMaxMarginUi,
   poolSafeCf,
 } from "@/lib/poolMaxLeverage";
 import {
@@ -833,36 +834,28 @@ function LeveragePanel({
     ? markPositionValueUsd(openPos, spot)
     : { entryUsd: 0, markUsd: 0 };
 
-  // Margin Max must use raw balance — locale strings like "194,659" parse as 194.
+  // Raw balances only — never parse locale strings ("194,659" → 194).
   const walletSol = solBalanceLamports / 1e9;
   const walletTokens =
     Number(tokenBalanceRaw || "0") / 10 ** Math.max(0, tokenDecimals || 6);
+  const reserveProjectUi = omnipairPoolSnapshot
+    ? Number(omnipairPoolSnapshot.reserveProjectRaw) /
+      10 ** Math.max(0, omnipairPoolSnapshot.projectTokenDecimals || 6)
+    : 0;
 
-  // 1.0x = collateral only (no borrow) → Max = full wallet. Not a swap.
-  // >1x borrows against that collateral → Max margin shrinks with leverage / pool CF.
-  const borrowFraction = Math.max(0, lockedLev - 1) / Math.max(lockedLev, 1);
-  const isOneX = borrowFraction < 1e-8;
-  const effectiveCf = Math.min(borrowFraction, safeCf);
-  const maxPoolBorrowSol = Math.max(0.001, reserveSol * 0.12);
-  const walletLongCap =
-    walletTokens > 0 ? walletTokens * 0.98 : Number.POSITIVE_INFINITY;
-  const poolLongCap =
-    !isOneX && effectiveCf > 1e-8 && spot > 0
-      ? maxPoolBorrowSol / (spot * effectiveCf * 0.9)
-      : Number.POSITIVE_INFINITY;
-  const maxLongMarginTokens = isOneX
-    ? walletLongCap
-    : Math.min(walletLongCap, poolLongCap) / Math.max(lockedLev, 1);
-  const walletShortCap = Math.max(0, walletSol - 0.02);
-  const poolShortCap =
-    !isOneX && effectiveCf > 1e-8
-      ? maxPoolBorrowSol / (effectiveCf * 0.85)
-      : Number.POSITIVE_INFINITY;
-  const maxShortMarginSol = isOneX
-    ? walletShortCap
-    : Math.min(walletShortCap, poolShortCap) / Math.max(lockedLev, 1);
-  const maxMargin =
-    direction === "short" ? maxShortMarginSol : maxLongMarginTokens;
+  // Omnipair docs: Max always respects impact CF + borrow liquidity + reserves —
+  // including at 1x (especially shorts: you can only borrow what's in the pool).
+  const marginCap = poolMaxMarginUi({
+    direction,
+    leverage: lockedLev,
+    spotSol: spot,
+    reserveSol,
+    reserveProjectUi,
+    walletTokens,
+    walletSol,
+  });
+  const maxMargin = marginCap.maxMargin;
+  const isOneX = marginCap.borrowFraction < 1e-8;
 
   const displayTicker =
     token.ticker.length > 6 ? token.ticker.slice(0, 6) + "…" : token.ticker;
@@ -1018,7 +1011,7 @@ function LeveragePanel({
         </span>
         <span className="text-right text-[10px] text-white/40">
           {isOneX
-            ? "1.0x = collateral only (not a swap) · Max = full wallet"
+            ? `1.0x collateral only · Max pool-capped (${(safeCf * 100).toFixed(0)}% CF band)`
             : `Max ${maxLev.toFixed(1)}x · CF ${(safeCf * 100).toFixed(0)}% · ${reserveSol > 0 ? `${reserveSol.toFixed(2)} SOL depth` : "awaiting pool"}`}
         </span>
       </div>
