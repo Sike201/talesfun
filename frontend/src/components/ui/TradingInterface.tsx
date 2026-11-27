@@ -18,7 +18,6 @@ import {
 import { useWalletBalances } from "@/hooks/useWalletBalances";
 import { persistLaunchpadTrade } from "@/lib/persistLaunchpadTrade";
 import { useSolUsd } from "@/hooks/useSolUsd";
-import WakeSlider from "@/components/ui/WakeSlider";
 import {
   clampLeverage,
   MIN_LEVERAGE,
@@ -233,60 +232,126 @@ function SlippageButton({
   );
 }
 
-/* ── Leverage slider (WakeSlider, pool-CF capped max) ──────────────── */
-function LeverageWakeControl({
+/**
+ * Shared pool-capped range control (same chrome as Borrow LTV).
+ * Used for leverage (×) and borrow LTV (%).
+ */
+function TalesPoolRangeSlider({
+  label,
+  value,
+  min,
+  max,
+  step = 0.1,
+  formatValue,
+  footerLeft,
+  footerCenter,
+  footerRight,
+  onChange,
+  ariaLabel,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  formatValue: (v: number) => string;
+  footerLeft: ReactNode;
+  footerCenter: ReactNode;
+  footerRight: ReactNode;
+  onChange: (v: number) => void;
+  ariaLabel: string;
+}) {
+  const hi = Math.max(min + step, max);
+  const clamped = Math.min(Math.max(value, min), hi);
+  const fill = Math.min(100, ((clamped - min) / (hi - min)) * 100);
+  const nearMax = clamped >= hi * 0.85;
+
+  return (
+    <div className="space-y-2.5 px-0.5 pt-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-medium text-white/45">{label}</span>
+        <span className="text-sm font-semibold tabular-nums text-white">
+          {formatValue(clamped)}
+        </span>
+      </div>
+
+      <div className="relative h-6">
+        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
+          <div
+            className={cn(
+              "h-full rounded-full transition-[width]",
+              nearMax ? "bg-amber-400/90" : "bg-emerald-400/90"
+            )}
+            style={{ width: `${fill}%` }}
+          />
+        </div>
+        <input
+          type="range"
+          min={min}
+          max={Number(hi.toFixed(1))}
+          step={step}
+          value={clamped}
+          onChange={e => onChange(parseFloat(e.target.value))}
+          className="absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow"
+          aria-label={ariaLabel}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 text-[10px] tabular-nums">
+        <span className="text-white/35">{footerLeft}</span>
+        <span className="text-center text-white/50">{footerCenter}</span>
+        <span className="text-white/70">{footerRight}</span>
+      </div>
+    </div>
+  );
+}
+
+function LeverageRangeControl({
   value,
   onChange,
   maxLev,
+  depthSol,
 }: {
   value: number;
   onChange: (v: number) => void;
   maxLev: number;
+  depthSol: number;
 }) {
   const hi = Math.max(MIN_LEVERAGE + 0.1, maxLev);
   return (
-    <div className="px-0.5 py-1">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium text-white/45">Leverage</span>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold tabular-nums text-white">
-            {value.toFixed(1)}x
-          </span>
-          <button
-            type="button"
-            className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:border-white/35 hover:text-white"
-            onClick={() => onChange(hi)}
-          >
-            Max {hi.toFixed(1)}x
-          </button>
-        </div>
-      </div>
-      <WakeSlider
-        value={value}
-        min={MIN_LEVERAGE}
-        max={hi}
-        step={0.1}
-        bars={36}
-        height={44}
-        restHeight={10}
-        gap={3}
-        fillColor="#f4f4f5"
-        trackColor="#27272a"
-        crestColor="#a1a1aa"
-        sensitivity={1.15}
-        reach={7}
-        skew={0.55}
-        glide={0.22}
-        smoothing={90}
-        ariaLabel="Leverage"
-        formatValue={v => `${v.toFixed(1)}x`}
-        onChange={onChange}
-      />
-      <div className="mt-1 flex justify-between text-[10px] text-white/30">
-        <span>{MIN_LEVERAGE.toFixed(1)}x</span>
-        <span>Pool max {hi.toFixed(1)}x</span>
-      </div>
-    </div>
+    <TalesPoolRangeSlider
+      label="Leverage"
+      value={value}
+      min={MIN_LEVERAGE}
+      max={hi}
+      step={0.1}
+      formatValue={v => `${v.toFixed(1)}x`}
+      ariaLabel="Leverage"
+      onChange={onChange}
+      footerLeft={`${MIN_LEVERAGE.toFixed(1)}x`}
+      footerCenter={
+        <>
+          Pool max{" "}
+          <span className="font-semibold text-white/80">{hi.toFixed(1)}x</span>
+          {depthSol > 0 ? (
+            <span className="text-white/35">
+              {" "}
+              · {depthSol < 1 ? "thin" : depthSol < 5 ? "moderate" : "deep"}{" "}
+              {depthSol.toFixed(2)} SOL
+            </span>
+          ) : null}
+        </>
+      }
+      footerRight={
+        <button
+          type="button"
+          className="font-semibold text-white/75 hover:text-white"
+          onClick={() => onChange(hi)}
+        >
+          Max {hi.toFixed(1)}x
+        </button>
+      }
+    />
   );
 }
 
@@ -309,9 +374,9 @@ export default function TradingInterface({
     omnipairPoolSnapshot.spotPriceSol > 0;
 
   const tabs: { id: Mode; label: string }[] = [
-    { id: "leverage", label: "Leverage" },
-    { id: "borrow", label: "Borrow" },
     { id: "swap", label: "Swap" },
+    { id: "borrow", label: "Borrow" },
+    { id: "leverage", label: "Leverage" },
   ];
 
   return (
@@ -1131,17 +1196,14 @@ function LeveragePanel({
         />
       </TalesTradeField>
 
-      <LeverageWakeControl
+      <LeverageRangeControl
         value={lockedLev}
         maxLev={maxLev}
+        depthSol={reserveSol}
         onChange={v => setLeverage(clampLeverage(v, maxLev))}
       />
 
       <div className="space-y-0 px-0.5 py-1">
-        <TalesTradeDetailsRow
-          label="Leverage"
-          value={`${lockedLev.toFixed(1)}x`}
-        />
         <TalesTradeDetailsRow
           label="Spot"
           value={spot > 0 ? formatSolPerTokenPrice(spot) : "—"}
@@ -1153,22 +1215,6 @@ function LeveragePanel({
         <TalesTradeDetailsRow
           label="Position value"
           value={sizeNum > 0 ? formatUSD(previewPosValueUsd) : "—"}
-        />
-        <TalesTradeDetailsRow
-          label="Pool depth"
-          value={reserveSol > 0 ? `${reserveSol.toFixed(3)} SOL` : "—"}
-        />
-        <TalesTradeDetailsRow
-          label="Max margin"
-          value={
-            Number.isFinite(maxMargin) && maxMargin > 0
-              ? `${
-                  maxMargin >= 1000
-                    ? Math.floor(maxMargin).toLocaleString()
-                    : Number(maxMargin.toPrecision(4))
-                } ${direction === "short" ? "SOL" : displayTicker}`
-              : "—"
-          }
         />
       </div>
 
@@ -1208,8 +1254,6 @@ function LeveragePanel({
   );
 }
 
-/* ─── Borrow LTV slider (Omnipair-beta inspired, Tales chrome) ───── */
-
 function BorrowLtvSlider({
   ltvPct,
   maxBorrowPct,
@@ -1218,55 +1262,28 @@ function BorrowLtvSlider({
   depthSol,
 }: {
   ltvPct: number;
-  /** Max borrow CF % for this pool (impact-aware). */
   maxBorrowPct: number;
-  /** Liquidation CF % (docs: borrow CF ≈ liq CF × 0.95). */
   liqPct: number;
   onChange: (pct: number) => void;
   depthSol: number;
 }) {
-  // Scale the bar to pool Max CF only — stretching to 85% made Max/Liq overlap
-  // and painted most of the track as a fake "danger" zone on thin pools.
-  const hi = Math.max(1, maxBorrowPct);
-  const fill = Math.min(100, (Math.min(ltvPct, hi) / hi) * 100);
-  const nearMax = ltvPct >= hi * 0.85;
-
   return (
-    <div className="space-y-2.5 px-0.5 pt-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-medium text-white/45">Loan to value</span>
-        <span className="text-sm font-semibold tabular-nums text-white">
-          {ltvPct.toFixed(1)}%
-        </span>
-      </div>
-
-      <div className="relative h-6">
-        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
-          <div
-            className={cn(
-              "h-full rounded-full transition-[width]",
-              nearMax ? "bg-amber-400/90" : "bg-emerald-400/90"
-            )}
-            style={{ width: `${fill}%` }}
-          />
-        </div>
-        <input
-          type="range"
-          min={1}
-          max={Number(hi.toFixed(1))}
-          step={0.1}
-          value={Math.min(ltvPct, hi)}
-          onChange={e => onChange(parseFloat(e.target.value))}
-          className="absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow"
-          aria-label="Loan to value"
-        />
-      </div>
-
-      <div className="flex items-center justify-between gap-3 text-[10px] tabular-nums">
-        <span className="text-white/35">1%</span>
-        <span className="text-center text-white/50">
+    <TalesPoolRangeSlider
+      label="Loan to value"
+      value={ltvPct}
+      min={1}
+      max={maxBorrowPct}
+      step={0.1}
+      formatValue={v => `${v.toFixed(1)}%`}
+      ariaLabel="Loan to value"
+      onChange={onChange}
+      footerLeft="1%"
+      footerCenter={
+        <>
           Pool max{" "}
-          <span className="font-semibold text-white/80">{maxBorrowPct.toFixed(0)}%</span>
+          <span className="font-semibold text-white/80">
+            {maxBorrowPct.toFixed(0)}%
+          </span>
           {depthSol > 0 ? (
             <span className="text-white/35">
               {" "}
@@ -1274,12 +1291,14 @@ function BorrowLtvSlider({
               {depthSol.toFixed(2)} SOL
             </span>
           ) : null}
-        </span>
+        </>
+      }
+      footerRight={
         <span className="text-red-400/80">
           Liq <span className="font-semibold">{liqPct.toFixed(0)}%</span>
         </span>
-      </div>
-    </div>
+      }
+    />
   );
 }
 
