@@ -31,10 +31,12 @@ import {
   tradeExposureUsd,
   tradePnlUsd,
 } from "@/lib/positionMetrics";
+import { FieldHint, LabelWithHint } from "@/components/ui/FieldHint";
 
 type Props = {
   mint: string;
   ticker?: string;
+  imageUrl?: string | null;
   trades?: Trade[];
   spotSol: number;
   solUsd: number | null;
@@ -42,6 +44,8 @@ type Props = {
   omnipairPoolSnapshot?: OmnipairPoolSnapshot | null;
   onCountChange?: (count: number) => void;
 };
+
+const SOL_ICON = "/icons/sol.svg";
 
 function ToLiqRing({ pct }: { pct: number }) {
   const r = 7;
@@ -78,62 +82,40 @@ function ToLiqRing({ pct }: { pct: number }) {
           transform="rotate(-90 9 9)"
         />
       </svg>
-      <span className="text-[12px] text-white/75">{clamped.toFixed(2)}%</span>
+      <span className="text-[12px] text-white/75">{clamped.toFixed(0)}%</span>
     </span>
   );
 }
 
-function SectionShell({
-  title,
-  count,
-  summary,
-  open,
-  onToggle,
-  actionLabel,
-  children,
+function TokenAvatar({
+  src,
+  fallback,
 }: {
-  title: string;
-  count: number;
-  summary: ReactNode;
-  open: boolean;
-  onToggle: () => void;
-  actionLabel?: string;
-  children: React.ReactNode;
+  src?: string | null;
+  fallback: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.02]">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-white/[0.03]"
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-white">{title}</span>
-            <span className="rounded-full bg-white/[0.08] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/50">
-              {count}
-            </span>
-            {actionLabel ? (
-              <span className="ml-auto text-[11px] font-medium text-emerald-400/80">
-                {actionLabel}
-              </span>
-            ) : null}
-          </div>
-          <div className="mt-1.5">{summary}</div>
-        </div>
-        <ChevronDown
-          size={16}
-          className={cn(
-            "shrink-0 text-white/35 transition-transform",
-            open && "rotate-180"
-          )}
-        />
-      </button>
-      {open ? (
-        <div className="border-t border-white/[0.05] px-2 pb-2 pt-1">
-          {children}
-        </div>
-      ) : null}
+    <span className="relative size-5 shrink-0 overflow-hidden rounded-full bg-white/10">
+      {src?.trim() ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={src} alt="" width={20} height={20} className="size-5 object-cover" />
+      ) : (
+        <span className="flex size-5 items-center justify-center text-[8px] font-bold text-white/45">
+          {fallback.slice(0, 2).toUpperCase()}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function MetaCell({ label, hint, value }: { label: string; hint?: string; value: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <p className="mb-0.5 inline-flex items-center gap-1 text-[10px] text-white/30">
+        {label}
+        {hint ? <FieldHint text={hint} /> : null}
+      </p>
+      <p className="truncate text-[12px] tabular-nums text-white/70">{value}</p>
     </div>
   );
 }
@@ -141,6 +123,7 @@ function SectionShell({
 export default function TokenPositionsList({
   mint,
   ticker = "TOKEN",
+  imageUrl = null,
   trades = [],
   spotSol,
   solUsd,
@@ -151,8 +134,6 @@ export default function TokenPositionsList({
   const { connection } = useConnection();
   const walletAdapter = useWallet();
   const [tradesOpen, setTradesOpen] = useState(true);
-  const [loansOpen, setLoansOpen] = useState(true);
-  const [historyOpen, setHistoryOpen] = useState(true);
   const [local, setLocal] = useState<OpenLeveragePosition[]>([]);
   const [onChain, setOnChain] = useState<OmnipairUserPositionView | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -160,6 +141,7 @@ export default function TokenPositionsList({
   const [loadingChain, setLoadingChain] = useState(false);
 
   const usd = solUsd ?? 140;
+  const projectIcon = imageUrl?.trim() || null;
 
   const refresh = useCallback(async () => {
     if (!connectedWallet) {
@@ -258,7 +240,6 @@ export default function TokenPositionsList({
     });
   }, [onChain, omnipairPoolSnapshot, spotSol, usd]);
 
-  // If on-chain exists but no local loan/trade, synthesize a row for display.
   const displayTrades = useMemo(() => {
     if (tradeRows.length > 0) return tradeRows;
     if (!onChain || !omnipairPoolSnapshot || !connectedWallet) return [];
@@ -273,7 +254,6 @@ export default function TokenPositionsList({
     const isShort = debtProject > BigInt(0);
     const isLongLev =
       !isShort && debtSol > BigInt(0) && collSol === BigInt(0);
-    // Heuristic: short or leveraged long with local missing → show as trade
     if (!isShort && !isLongLev) return [];
     return [
       {
@@ -302,7 +282,6 @@ export default function TokenPositionsList({
 
   const displayLoans = useMemo(() => {
     if (loanRows.length > 0) return loanRows;
-    // Synthesize a loan row from on-chain when Borrow was used (no local loan yet).
     if (!onChain || !omnipairPoolSnapshot || !connectedWallet) return [];
     if (tradeRows.length > 0) return [];
     const projectIs0 = onChain.token0.equals(omnipairPoolSnapshot.projectMint);
@@ -343,9 +322,11 @@ export default function TokenPositionsList({
     usd,
   ]);
 
+  const openCount = displayTrades.length + displayLoans.length;
+
   useEffect(() => {
-    onCountChange?.(displayTrades.length + displayLoans.length);
-  }, [displayTrades.length, displayLoans.length, onCountChange]);
+    onCountChange?.(openCount);
+  }, [openCount, onCountChange]);
 
   const mySwaps = useMemo(() => {
     if (!connectedWallet) return [];
@@ -353,9 +334,13 @@ export default function TokenPositionsList({
       .filter(
         t =>
           t.trader?.toLowerCase() === connectedWallet.toLowerCase() &&
-          (t.type === "buy" || t.type === "sell")
+          (t.type === "buy" ||
+            t.type === "sell" ||
+            t.type === "long" ||
+            t.type === "short" ||
+            t.type === "borrow")
       )
-      .slice(0, 40);
+      .slice(0, 50);
   }, [trades, connectedWallet]);
 
   const tradesSummary = useMemo(() => {
@@ -368,27 +353,17 @@ export default function TokenPositionsList({
       pnl += pnlUsd;
       exposure += tradeExposureUsd(p);
     }
+    for (const p of displayLoans) {
+      value +=
+        risk?.collateralUsd ??
+        p.marginUi * (p.entrySpotSol || spotSol) * usd;
+      exposure += (p.borrowSolUi ?? 0) * usd;
+    }
     if (risk && displayTrades.length > 0 && value <= 0) {
       value = Math.max(0, risk.collateralUsd - risk.debtUsd);
     }
     return { value, pnl, exposure };
-  }, [displayTrades, spotSol, risk]);
-
-  const loansSummary = useMemo(() => {
-    if (risk && displayLoans.length > 0) {
-      return {
-        value: risk.collateralUsd,
-        owes: risk.debtUsd,
-      };
-    }
-    let value = 0;
-    let owes = 0;
-    for (const p of displayLoans) {
-      value += p.marginUi * (p.entrySpotSol || spotSol) * usd;
-      owes += (p.borrowSolUi ?? 0) * usd;
-    }
-    return { value, owes };
-  }, [displayLoans, risk, spotSol, usd]);
+  }, [displayTrades, displayLoans, spotSol, risk, usd]);
 
   const anchorWallet = () => {
     if (!walletAdapter.publicKey || !walletAdapter.signTransaction) return null;
@@ -497,33 +472,40 @@ export default function TokenPositionsList({
   if (!connectedWallet) {
     return (
       <p className="px-1 py-14 text-center text-sm text-white/40">
-        Connect your wallet to see Trades, Loans, and your swap history.
+        Connect your wallet to see open trades and your swap history.
       </p>
     );
   }
 
   const renderTradeRow = (p: OpenLeveragePosition) => {
-    const { markUsd, pnlUsd } = tradePnlUsd(p, spotSol);
+    const localMark = tradePnlUsd(p, spotSol);
+    const markUsd =
+      localMark.markUsd > 0
+        ? localMark.markUsd
+        : risk
+          ? Math.max(0, risk.collateralUsd - risk.debtUsd)
+          : 0;
+    const pnlUsd = localMark.markUsd > 0 ? localMark.pnlUsd : 0;
     const toLiq = risk?.toLiquidationPct ?? 100;
     const expanded = expandedId === p.id;
     const busy = busyId === p.id;
-    const sizeLabel =
-      p.leverage > 0
-        ? `${p.leverage.toFixed(1)}x ${p.direction === "long" ? "Long" : "Short"} ${formatNumber(p.marginUi)} ${ticker}`
-        : `${p.direction === "long" ? "Long" : "Short"} ${ticker}`;
+    const sideLabel = p.direction === "long" ? "Long" : "Short";
+    const lev =
+      p.leverage > 0 ? `${p.leverage.toFixed(1)}x ` : "";
 
     return (
-      <div
-        key={p.id}
-        className="mb-1 overflow-hidden rounded-lg border border-white/[0.04] bg-black/20"
-      >
+      <div key={p.id} className="rounded-xl bg-white/[0.025]">
         <button
           type="button"
-          className="grid w-full grid-cols-[1fr_auto] items-center gap-2 px-3 py-2.5 text-left sm:grid-cols-[minmax(0,1.4fr)_90px_80px_70px_24px]"
+          className="grid w-full grid-cols-[1fr_auto] items-center gap-2 px-3 py-3 text-left sm:grid-cols-[minmax(0,1.5fr)_88px_72px_72px_20px]"
           onClick={() => setExpandedId(expanded ? null : p.id)}
         >
-          <span className="truncate text-[12px] font-medium text-white/85">
-            {sizeLabel}
+          <span className="flex min-w-0 items-center gap-2">
+            <TokenAvatar src={projectIcon} fallback={ticker} />
+            <span className="truncate text-[13px] font-medium text-white/90">
+              {lev}
+              {sideLabel} {ticker}
+            </span>
           </span>
           <span className="hidden sm:inline-flex">
             <ToLiqRing pct={toLiq} />
@@ -538,7 +520,7 @@ export default function TokenPositionsList({
             {formatUSD(pnlUsd)}
           </span>
           <span className="text-right text-[12px] tabular-nums text-white/70">
-            {markUsd > 0 ? formatUSD(markUsd) : risk ? formatUSD(Math.max(0, risk.collateralUsd - risk.debtUsd)) : "—"}
+            {markUsd > 0 ? formatUSD(markUsd) : "—"}
           </span>
           <ChevronDown
             size={14}
@@ -549,7 +531,7 @@ export default function TokenPositionsList({
           />
         </button>
         {expanded ? (
-          <div className="space-y-3 border-t border-white/[0.05] px-3 py-3">
+          <div className="space-y-3 px-3 pb-3">
             <div className="flex flex-wrap items-center gap-2 text-[12px]">
               <span
                 className={cn(
@@ -574,7 +556,7 @@ export default function TokenPositionsList({
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-full border border-white/10 px-3 py-1 text-[11px] font-medium text-white/75 hover:bg-white/[0.06] disabled:opacity-40"
+                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
                 onClick={() => void onClose(p)}
               >
                 {busy ? "Closing…" : "Close"}
@@ -582,7 +564,7 @@ export default function TokenPositionsList({
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-full border border-white/10 px-3 py-1 text-[11px] font-medium text-white/75 hover:bg-white/[0.06] disabled:opacity-40"
+                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
                 onClick={() => void onRepay(p)}
               >
                 Repay
@@ -590,31 +572,35 @@ export default function TokenPositionsList({
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-full border border-white/10 px-3 py-1 text-[11px] font-medium text-white/75 hover:bg-white/[0.06] disabled:opacity-40"
+                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
                 onClick={() => void onWithdraw(p)}
               >
                 Withdraw collateral
               </button>
             </div>
-            <div className="grid gap-2 text-[11px] text-white/45 sm:grid-cols-2">
-              <div>
-                <span className="text-white/30">Entry</span>{" "}
-                {p.entrySpotSol > 0
-                  ? `$${(p.entrySpotSol * p.entrySolUsd).toPrecision(4)}`
-                  : "—"}
-              </div>
-              <div>
-                <span className="text-white/30">Mark</span>{" "}
-                {spotSol > 0 ? `$${(spotSol * usd).toPrecision(4)}` : "—"}
-              </div>
-              <div>
-                <span className="text-white/30">LTV</span>{" "}
-                {risk ? `${(risk.ltv * 100).toFixed(2)}%` : "—"}
-              </div>
-              <div>
-                <span className="text-white/30">To liquidation</span>{" "}
-                {risk ? `${risk.toLiquidationPct.toFixed(2)}%` : "—"}
-              </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <MetaCell
+                label="Entry"
+                value={
+                  p.entrySpotSol > 0
+                    ? `$${(p.entrySpotSol * p.entrySolUsd).toPrecision(4)}`
+                    : "—"
+                }
+              />
+              <MetaCell
+                label="Mark"
+                value={spotSol > 0 ? `$${(spotSol * usd).toPrecision(4)}` : "—"}
+              />
+              <MetaCell
+                label="LTV"
+                hint="Loan-to-value: debt divided by collateral. Rising LTV means less room before liquidation."
+                value={risk ? `${(risk.ltv * 100).toFixed(1)}%` : "—"}
+              />
+              <MetaCell
+                label="To liq"
+                hint="Headroom left before liquidation. Near 0% means the position is at high risk."
+                value={risk ? `${risk.toLiquidationPct.toFixed(1)}%` : "—"}
+              />
             </div>
           </div>
         ) : null}
@@ -632,26 +618,23 @@ export default function TokenPositionsList({
     const borrowedSol = p.borrowSolUi ?? (risk ? risk.debtUsd / usd : 0);
 
     return (
-      <div
-        key={p.id}
-        className="mb-1 overflow-hidden rounded-lg border border-white/[0.04] bg-black/20"
-      >
+      <div key={p.id} className="rounded-xl bg-white/[0.025]">
         <button
           type="button"
-          className="grid w-full grid-cols-[1fr_auto] items-center gap-2 px-3 py-2.5 text-left sm:grid-cols-[minmax(0,1.3fr)_90px_70px_70px_70px_24px]"
+          className="grid w-full grid-cols-[1fr_auto] items-center gap-2 px-3 py-3 text-left sm:grid-cols-[minmax(0,1.4fr)_88px_72px_72px_20px]"
           onClick={() => setExpandedId(expanded ? null : p.id)}
         >
-          <span className="truncate text-[12px] font-medium text-white/85">
-            Borrowed {borrowedSol > 0 ? borrowedSol.toFixed(3) : "—"} SOL
+          <span className="flex min-w-0 items-center gap-2">
+            <TokenAvatar src={SOL_ICON} fallback="SOL" />
+            <span className="truncate text-[13px] font-medium text-white/90">
+              Borrow {borrowedSol > 0 ? borrowedSol.toFixed(3) : "—"} SOL
+            </span>
           </span>
           <span className="hidden sm:inline-flex">
             <ToLiqRing pct={toLiq} />
           </span>
-          <span className="hidden rounded-full bg-white/[0.06] px-2 py-0.5 text-center text-[10px] text-white/45 sm:inline">
-            var APR
-          </span>
-          <span className="text-right text-[12px] tabular-nums text-white/70">
-            {formatUSD(owes)}
+          <span className="text-right text-[12px] tabular-nums text-white/55">
+            Owes {formatUSD(owes)}
           </span>
           <span className="hidden text-right text-[12px] tabular-nums text-white/70 sm:block">
             {formatUSD(value)}
@@ -665,7 +648,7 @@ export default function TokenPositionsList({
           />
         </button>
         {expanded ? (
-          <div className="space-y-3 border-t border-white/[0.05] px-3 py-3">
+          <div className="space-y-3 px-3 pb-3">
             <div className="flex flex-wrap items-center gap-2 text-[12px]">
               <span
                 className={cn(
@@ -690,7 +673,7 @@ export default function TokenPositionsList({
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-full border border-white/10 px-3 py-1 text-[11px] font-medium text-white/75 hover:bg-white/[0.06] disabled:opacity-40"
+                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
                 onClick={() => void onRepay(p)}
               >
                 Repay
@@ -698,7 +681,7 @@ export default function TokenPositionsList({
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-full border border-white/10 px-3 py-1 text-[11px] font-medium text-white/75 hover:bg-white/[0.06] disabled:opacity-40"
+                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
                 onClick={() => void onWithdraw(p)}
               >
                 Withdraw collateral
@@ -706,36 +689,31 @@ export default function TokenPositionsList({
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-full border border-white/10 px-3 py-1 text-[11px] font-medium text-white/75 hover:bg-white/[0.06] disabled:opacity-40"
+                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
                 onClick={() => void onClose(p)}
               >
                 {busy ? "Closing…" : "Close loan"}
               </button>
             </div>
-            <div className="grid gap-2 text-[11px] text-white/45 sm:grid-cols-2">
-              <div>
-                <span className="text-white/30">Collateral</span>{" "}
-                {formatNumber(p.marginUi)} {ticker} ({formatUSD(value)})
-              </div>
-              <div>
-                <span className="text-white/30">Debt</span>{" "}
-                {borrowedSol.toFixed(4)} SOL ({formatUSD(owes)})
-              </div>
-              <div>
-                <span className="text-white/30">LTV</span>{" "}
-                {risk
-                  ? `${(risk.ltv * 100).toFixed(2)}%`
-                  : "—"}
-                {risk ? (
-                  <span className="text-white/30">
-                    {" "}
-                    · {(risk.liquidationLtv * 100).toFixed(0)}% max
-                  </span>
-                ) : null}
-              </div>
-              <div>
-                <span className="text-white/30">Market</span> {ticker} / SOL
-              </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <MetaCell
+                label="Collateral"
+                value={`${formatNumber(p.marginUi)} ${ticker}`}
+              />
+              <MetaCell
+                label="Debt"
+                value={`${borrowedSol.toFixed(4)} SOL`}
+              />
+              <MetaCell
+                label="LTV"
+                hint="Debt ÷ collateral. Stay below the pool liquidation threshold."
+                value={
+                  risk
+                    ? `${(risk.ltv * 100).toFixed(1)}% · ${(risk.liquidationLtv * 100).toFixed(0)}% max`
+                    : "—"
+                }
+              />
+              <MetaCell label="Collateral $" value={formatUSD(value)} />
             </div>
           </div>
         ) : null}
@@ -743,123 +721,160 @@ export default function TokenPositionsList({
     );
   };
 
+  const historyLabel = (t: Trade) => {
+    if (t.type === "buy") return "Buy";
+    if (t.type === "sell") return "Sell";
+    if (t.type === "long") return "Long";
+    if (t.type === "short") return "Short";
+    if (t.type === "borrow") return "Borrow";
+    return t.type;
+  };
+
   return (
-    <div className="space-y-3 px-0.5 py-2">
+    <div className="space-y-5 px-0.5 py-2">
       {loadingChain ? (
         <p className="px-1 text-[11px] text-white/30">Syncing on-chain position…</p>
       ) : null}
 
-      <SectionShell
-        title="Trades"
-        count={displayTrades.length}
-        open={tradesOpen}
-        onToggle={() => setTradesOpen(v => !v)}
-        summary={
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12px]">
-            <span className="text-[18px] font-semibold tabular-nums text-white">
-              {formatUSD(tradesSummary.value)}
-            </span>
-            <span
-              className={cn(
-                "tabular-nums",
-                tradesSummary.pnl >= 0 ? "text-emerald-400" : "text-red-400"
-              )}
-            >
-              PnL {tradesSummary.pnl >= 0 ? "+" : ""}
-              {formatUSD(tradesSummary.pnl)}
-            </span>
-            <span className="text-white/40">
-              Exposure {formatUSD(tradesSummary.exposure)}
-            </span>
+      {/* Single collapsible: Trades (leverage + loans) */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setTradesOpen(v => !v)}
+          className="flex w-full items-start gap-3 text-left"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[15px] font-semibold text-white">Trades</span>
+              <span className="text-[12px] tabular-nums text-white/35">
+                {openCount}
+              </span>
+              <FieldHint text="Open leverage longs/shorts and SOL borrows against this token. Close, repay, or withdraw from the expanded row." />
+            </div>
+            <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12px]">
+              <span className="text-[20px] font-semibold tabular-nums text-white">
+                {formatUSD(tradesSummary.value)}
+              </span>
+              <span
+                className={cn(
+                  "tabular-nums",
+                  tradesSummary.pnl >= 0 ? "text-emerald-400" : "text-red-400"
+                )}
+              >
+                PnL {tradesSummary.pnl >= 0 ? "+" : ""}
+                {formatUSD(tradesSummary.pnl)}
+              </span>
+              <span className="inline-flex items-center gap-1 text-white/40">
+                Exposure {formatUSD(tradesSummary.exposure)}
+                <FieldHint text="Notional size at risk — margin × leverage for trades, or outstanding SOL debt for borrows." />
+              </span>
+            </div>
           </div>
-        }
-      >
-        {displayTrades.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[12px] text-white/35">
-            No open leverage positions. Open one from Leverage.
-          </p>
-        ) : (
-          displayTrades.map(renderTradeRow)
-        )}
-      </SectionShell>
+          <ChevronDown
+            size={16}
+            className={cn(
+              "mt-1 shrink-0 text-white/35 transition-transform",
+              tradesOpen && "rotate-180"
+            )}
+          />
+        </button>
 
-      <SectionShell
-        title="Loans"
-        count={displayLoans.length}
-        open={loansOpen}
-        onToggle={() => setLoansOpen(v => !v)}
-        summary={
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12px]">
-            <span className="text-[18px] font-semibold tabular-nums text-white">
-              {formatUSD(loansSummary.value)}
-            </span>
-            <span className="text-white/45">
-              Owes: {formatUSD(loansSummary.owes)}
-            </span>
+        {tradesOpen ? (
+          <div className="mt-3 space-y-2">
+            {openCount === 0 ? (
+              <p className="py-8 text-center text-[12px] text-white/35">
+                No open positions. Use Leverage or Borrow to open one.
+              </p>
+            ) : (
+              <>
+                {displayTrades.map(renderTradeRow)}
+                {displayLoans.map(renderLoanRow)}
+              </>
+            )}
           </div>
-        }
-      >
-        {displayLoans.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[12px] text-white/35">
-            No open loans. Borrow SOL against {ticker} from Borrow.
-          </p>
-        ) : (
-          displayLoans.map(renderLoanRow)
-        )}
-      </SectionShell>
+        ) : null}
+      </div>
 
-      <SectionShell
-        title="History"
-        count={mySwaps.length}
-        open={historyOpen}
-        onToggle={() => setHistoryOpen(v => !v)}
-        summary={
-          <span className="text-[12px] text-white/40">
-            Your buys & sells on this token
+      {/* Flat history — not a second accordion */}
+      <div>
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <p className="text-[13px] font-medium text-white/55">
+            <LabelWithHint hint="Your buys, sells, leverage opens, and borrows for this token from the connected wallet.">
+              History
+            </LabelWithHint>
+          </p>
+          <span className="text-[11px] tabular-nums text-white/30">
+            {mySwaps.length}
           </span>
-        }
-      >
+        </div>
+
         {mySwaps.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[12px] text-white/35">
+          <p className="py-6 text-center text-[12px] text-white/35">
             No swaps yet from this wallet.
           </p>
         ) : (
-          <div className="max-h-[280px] space-y-0.5 overflow-y-auto scrollbar-hide">
-            {mySwaps.map(t => (
-              <div
-                key={t.id || t.txSignature}
-                className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-[12px] hover:bg-white/[0.03]"
-              >
-                <span
-                  className={cn(
-                    "font-semibold uppercase",
-                    t.type === "buy" ? "text-emerald-400" : "text-red-400"
-                  )}
+          <div className="max-h-[320px] space-y-0.5 overflow-y-auto scrollbar-hide">
+            {mySwaps.map(t => {
+              const usdVal =
+                t.solAmount > 0 && usd > 0 ? t.solAmount * usd : null;
+              const actionTone =
+                t.type === "buy" || t.type === "long"
+                  ? "text-emerald-400"
+                  : t.type === "sell" || t.type === "short"
+                    ? "text-red-400"
+                    : "text-sky-300";
+              return (
+                <div
+                  key={t.id || t.txSignature}
+                  className="grid grid-cols-[3.2rem_1fr_auto] items-center gap-2 rounded-lg px-1 py-2.5 text-[12px] hover:bg-white/[0.03] sm:grid-cols-[3.5rem_minmax(0,1fr)_5.5rem_5rem_4.5rem]"
                 >
-                  {t.type}
-                </span>
-                <span className="tabular-nums text-white/70">
-                  {t.solAmount > 0 ? `${t.solAmount.toFixed(4)} SOL` : "—"}
-                </span>
-                <span className="tabular-nums text-white/45">
-                  {t.tokenAmount > 0 ? formatNumber(t.tokenAmount) : "—"}
-                </span>
-                {t.txSignature ? (
-                  <a
-                    href={`https://solscan.io/tx/${t.txSignature}?cluster=devnet`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-mono text-[10px] text-white/30 hover:text-white/60"
-                    onClick={e => e.stopPropagation()}
-                  >
-                    {shortenAddress(t.txSignature, 4)}
-                  </a>
-                ) : null}
-              </div>
-            ))}
+                  <span className={cn("font-semibold", actionTone)}>
+                    {historyLabel(t)}
+                  </span>
+                  <span className="min-w-0 truncate tabular-nums text-white/80">
+                    {t.tokenAmount > 0 ? (
+                      <>
+                        {formatNumber(t.tokenAmount)}{" "}
+                        <span className="text-white/45">{ticker}</span>
+                      </>
+                    ) : t.type === "borrow" && t.solAmount > 0 ? (
+                      <>
+                        {t.solAmount.toFixed(4)}{" "}
+                        <span className="text-white/45">SOL</span>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </span>
+                  <span className="hidden tabular-nums text-white/55 sm:block">
+                    {t.solAmount > 0 ? `${t.solAmount.toFixed(4)} SOL` : "—"}
+                  </span>
+                  <span className="text-right tabular-nums text-white/70">
+                    {usdVal != null
+                      ? usdVal >= 0.01
+                        ? formatUSD(usdVal)
+                        : `$${usdVal.toFixed(4)}`
+                      : "—"}
+                  </span>
+                  {t.txSignature ? (
+                    <a
+                      href={`https://solscan.io/tx/${t.txSignature}?cluster=devnet`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hidden justify-self-end font-mono text-[10px] text-white/30 hover:text-white/60 sm:block"
+                      title={t.txSignature}
+                    >
+                      {shortenAddress(t.txSignature, 4)}
+                    </a>
+                  ) : (
+                    <span className="hidden sm:block" />
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
-      </SectionShell>
+      </div>
     </div>
   );
 }

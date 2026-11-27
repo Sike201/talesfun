@@ -435,8 +435,8 @@ export default function TokenCandlestickChart({
     <div className="relative overflow-hidden rounded-2xl">
       <div className="relative z-[2] flex flex-col gap-3 px-1 pb-2 pt-1 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <p className="text-[11px] font-medium text-white/35">
-            {sym} / SOL{usdMode ? " · USD" : ""}
+          <p className="max-w-full truncate text-[11px] font-medium tracking-wide text-white/35">
+            {usdMode ? `${sym}/USD` : `${sym}/SOL`}
           </p>
           <div className="mt-1 flex flex-wrap items-baseline gap-2.5">
             <p className="text-[1.65rem] font-semibold tabular-nums tracking-tight text-white">

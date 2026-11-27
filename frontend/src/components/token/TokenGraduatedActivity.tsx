@@ -106,7 +106,14 @@ export default function TokenGraduatedActivity({
                         : "—"}
                   </span>
                   <span className="tabular-nums text-white/60">
-                    {trade.tokenAmount > 0 ? formatNumber(trade.tokenAmount) : "—"}
+                    {trade.tokenAmount > 0 ? (
+                      <>
+                        {formatNumber(trade.tokenAmount)}{" "}
+                        <span className="text-white/40">{ticker}</span>
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </span>
                   <span className="tabular-nums text-white/50">
                     {isLending ? "—" : formatUSD(rowMcapUsd)}

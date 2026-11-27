@@ -150,6 +150,7 @@ export default function TokenGraduatedFeed({
           <TokenPositionsList
             mint={token.mint}
             ticker={token.ticker}
+            imageUrl={token.imageUrl}
             trades={trades}
             spotSol={spotSol}
             solUsd={solUsd}

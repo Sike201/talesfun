@@ -7,6 +7,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { ArrowDownUp } from "lucide-react";
 import { Token } from "@/types";
 import { cn, formatUSD, formatSolPerTokenPrice, formatTokenPriceUsd } from "@/lib/utils";
+import { LabelWithHint } from "@/components/ui/FieldHint";
 import toast from "react-hot-toast";
 import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
@@ -145,7 +146,7 @@ function TalesTradeDetailsRow({
   value,
   valueClassName,
 }: {
-  label: string;
+  label: ReactNode;
   value: ReactNode;
   valueClassName?: string;
 }) {
@@ -239,6 +240,7 @@ function SlippageButton({
  */
 function TalesPoolRangeSlider({
   label,
+  labelHint,
   value,
   min,
   max,
@@ -250,7 +252,8 @@ function TalesPoolRangeSlider({
   onChange,
   ariaLabel,
 }: {
-  label: string;
+  label: ReactNode;
+  labelHint?: ReactNode;
   value: number;
   min: number;
   max: number;
@@ -266,21 +269,28 @@ function TalesPoolRangeSlider({
   const clamped = Math.min(Math.max(value, min), hi);
   const fill = Math.min(100, ((clamped - min) / (hi - min)) * 100);
   const nearMax = clamped >= hi * 0.85;
+  const maxAttr = Number(hi.toFixed(Math.max(1, String(step).split(".")[1]?.length ?? 1)));
 
   return (
     <div className="space-y-2.5 px-0.5 pt-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-medium text-white/45">{label}</span>
+        <span className="text-[11px] font-medium text-white/45">
+          {labelHint ? (
+            <LabelWithHint hint={labelHint}>{label}</LabelWithHint>
+          ) : (
+            label
+          )}
+        </span>
         <span className="text-sm font-semibold tabular-nums text-white">
           {formatValue(clamped)}
         </span>
       </div>
 
-      <div className="relative h-6">
-        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
+      <div className="relative h-8 touch-none select-none">
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-white/10">
           <div
             className={cn(
-              "h-full rounded-full transition-[width]",
+              "h-full rounded-full will-change-[width]",
               nearMax ? "bg-amber-400/90" : "bg-emerald-400/90"
             )}
             style={{ width: `${fill}%` }}
@@ -289,18 +299,30 @@ function TalesPoolRangeSlider({
         <input
           type="range"
           min={min}
-          max={Number(hi.toFixed(1))}
+          max={maxAttr}
           step={step}
           value={clamped}
+          onInput={e => onChange(parseFloat((e.target as HTMLInputElement).value))}
           onChange={e => onChange(parseFloat(e.target.value))}
-          className="absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow"
+          className={cn(
+            "absolute inset-0 z-10 w-full cursor-pointer appearance-none bg-transparent",
+            "[&::-webkit-slider-runnable-track]:h-8 [&::-webkit-slider-runnable-track]:bg-transparent",
+            "[&::-webkit-slider-thumb]:relative [&::-webkit-slider-thumb]:mt-[10px]",
+            "[&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4",
+            "[&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full",
+            "[&::-webkit-slider-thumb]:border-0 [&::-webkit-slider-thumb]:bg-white",
+            "[&::-webkit-slider-thumb]:shadow-[0_0_0_3px_rgba(0,0,0,0.35)]",
+            "[&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent",
+            "[&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full",
+            "[&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white"
+          )}
           aria-label={ariaLabel}
         />
       </div>
 
       <div className="flex items-center justify-between gap-3 text-[10px] tabular-nums">
         <span className="text-white/35">{footerLeft}</span>
-        <span className="text-center text-white/50">{footerCenter}</span>
+        <span className="min-w-0 flex-1 text-center text-white/50">{footerCenter}</span>
         <span className="text-white/70">{footerRight}</span>
       </div>
     </div>
@@ -318,14 +340,15 @@ function LeverageRangeControl({
   maxLev: number;
   depthSol: number;
 }) {
-  const hi = Math.max(MIN_LEVERAGE + 0.1, maxLev);
+  const hi = Math.max(MIN_LEVERAGE + 0.05, maxLev);
   return (
     <TalesPoolRangeSlider
       label="Leverage"
+      labelHint="How much borrowed size vs your margin. Higher leverage amplifies gains and losses and moves you closer to liquidation."
       value={value}
       min={MIN_LEVERAGE}
       max={hi}
-      step={0.1}
+      step={0.05}
       formatValue={v => `${v.toFixed(1)}x`}
       ariaLabel="Leverage"
       onChange={onChange}
@@ -525,8 +548,7 @@ function formatSwapAmountInput(n: number, maxDecimals: number): string {
   return floored.toFixed(maxDecimals).replace(/\.?0+$/, "");
 }
 
-const SOL_TOKEN_ICON =
-  "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png";
+const SOL_TOKEN_ICON = "/icons/sol.svg";
 
 function SwapTokenChip({
   symbol,
@@ -535,14 +557,15 @@ function SwapTokenChip({
   symbol: string;
   iconUrl?: string | null;
 }) {
-  const label = symbol.length > 8 ? `${symbol.slice(0, 7)}…` : symbol;
+  const isSol = symbol.toUpperCase() === "SOL";
+  const resolvedIcon = iconUrl?.trim() || (isSol ? SOL_TOKEN_ICON : null);
   return (
-    <span className="inline-flex shrink-0 items-center gap-2 rounded-full border border-white/10 bg-[#0a0a0a] py-1.5 pl-1.5 pr-2.5 text-[13px] font-semibold text-white">
-      <span className="relative size-6 overflow-hidden rounded-full bg-white/10">
-        {iconUrl?.trim() ? (
+    <span className="inline-flex max-w-[11rem] shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#0a0a0a] py-1.5 pl-1.5 pr-2.5 text-[12px] font-semibold text-white sm:max-w-none sm:text-[13px]">
+      <span className="relative size-6 shrink-0 overflow-hidden rounded-full bg-white/10">
+        {resolvedIcon ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={iconUrl}
+            src={resolvedIcon}
             alt=""
             width={24}
             height={24}
@@ -550,11 +573,13 @@ function SwapTokenChip({
           />
         ) : (
           <span className="flex size-6 items-center justify-center text-[9px] font-bold text-white/50">
-            {label.slice(0, 2).toUpperCase()}
+            {symbol.slice(0, 2).toUpperCase()}
           </span>
         )}
       </span>
-      {label}
+      <span className="min-w-0 truncate" title={symbol}>
+        {symbol}
+      </span>
     </span>
   );
 }
@@ -676,6 +701,7 @@ function SwapPanel({
                 timestamp: fill.timestamp,
                 price_sol: fill.price_sol,
                 sol_amount_raw: fill.sol_amount_raw,
+                token_amount_raw: fill.token_amount_raw,
                 source: "omnipair" as const,
               },
             })
@@ -1103,7 +1129,7 @@ function LeveragePanel({
     direction === "long" ? (
       <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
     ) : (
-      <SwapTokenChip symbol="SOL" iconUrl={null} />
+      <SwapTokenChip symbol="SOL" iconUrl={SOL_TOKEN_ICON} />
     );
 
   return (
@@ -1235,7 +1261,11 @@ function LeveragePanel({
 
       <div className="space-y-0 px-0.5">
         <TalesTradeDetailsRow
-          label="Est. liquidation"
+          label={
+            <LabelWithHint hint="Estimated mark price where this position can be liquidated. Moves with pool liquidity and your LTV.">
+              Est. liquidation
+            </LabelWithHint>
+          }
           value={sizeNum > 0 ? formatTokenPriceUsd(liqPrice) : "—"}
         />
         <TalesTradeDetailsRow
@@ -1244,7 +1274,11 @@ function LeveragePanel({
         />
         {!isOneX ? (
           <TalesTradeDetailsRow
-            label="Max leverage"
+            label={
+              <LabelWithHint hint="Highest leverage this pool’s current depth safely supports (Omnipair dynamic CF).">
+                Max leverage
+              </LabelWithHint>
+            }
             value={`${maxLev.toFixed(1)}x`}
           />
         ) : null}
@@ -1302,6 +1336,7 @@ function BorrowLtvSlider({
   return (
     <TalesPoolRangeSlider
       label="Loan to value"
+      labelHint="Debt ÷ collateral value. Higher LTV borrows more SOL but leaves less room before liquidation."
       value={ltvPct}
       min={1}
       max={maxBorrowPct}
@@ -1459,7 +1494,13 @@ function BorrowPanel({
           signature: borrowSig,
           side: "borrow",
           sol_amount_raw: BigInt(Math.floor(borrowSol * 1e9)).toString(),
-          token_amount_raw: BigInt(Math.floor(coll * 1e6)).toString(),
+          token_amount_raw: BigInt(
+            Math.floor(
+              coll *
+                10 **
+                  (omnipairPoolSnapshot?.projectTokenDecimals ?? 6)
+            )
+          ).toString(),
           timestamp: new Date().toISOString(),
           wallet: walletAdapter.publicKey.toBase58(),
           price_sol: spot,
@@ -1490,10 +1531,10 @@ function BorrowPanel({
   return (
     <div className="space-y-2.5">
       <div className="flex items-center justify-between px-0.5 pt-0.5">
-        <span className="flex items-center gap-2 text-[12px] font-medium text-white/50">
-          <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
-          <span className="text-white/25">/</span>
-          <SwapTokenChip symbol="SOL" iconUrl={null} />
+        <span className="text-[12px] font-medium text-white/45">
+          <LabelWithHint hint="Isolated borrow: only this token’s collateral backs the SOL loan. Other positions stay separate.">
+            Borrow SOL
+          </LabelWithHint>
         </span>
         <span className="text-[11px] text-white/35">Isolated</span>
       </div>
@@ -1506,7 +1547,7 @@ function BorrowPanel({
           <p className="min-w-0 flex-1 text-[26px] font-semibold tabular-nums tracking-tight text-white">
             {collNum > 0 ? borrowSol.toFixed(6) : "0"}
           </p>
-          <SwapTokenChip symbol="SOL" iconUrl={null} />
+          <SwapTokenChip symbol="SOL" iconUrl={SOL_TOKEN_ICON} />
         </div>
         <p className="mt-2 text-[11px] tabular-nums text-white/35">
           {collNum > 0 ? `≈ ${formatUSD(borrowSol * usd)}` : "—"}
