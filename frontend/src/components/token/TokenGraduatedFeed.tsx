@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import type { Token, Trade } from "@/types";
 import { cn, formatNumber } from "@/lib/utils";
@@ -8,6 +8,7 @@ import TokenGraduatedActivity from "@/components/token/TokenGraduatedActivity";
 import TokenHoldersList from "@/components/token/TokenHoldersList";
 import TokenPositionsList from "@/components/token/TokenPositionsList";
 import { useMintHolders } from "@/hooks/useMintHolders";
+import { listOpenPositions } from "@/lib/openPositions";
 import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 
 export type GraduatedFeedSection = "activity" | "holders" | "positions";
@@ -40,6 +41,30 @@ export default function TokenGraduatedFeed({
       ? initialSection
       : "activity"
   );
+  const [myPositionCount, setMyPositionCount] = useState(0);
+  const walletKey = publicKey?.toBase58() ?? null;
+
+  useEffect(() => {
+    if (!walletKey) {
+      setMyPositionCount(0);
+      return;
+    }
+    const syncLocal = () => {
+      const n = listOpenPositions(token.mint).filter(
+        p => p.wallet.toLowerCase() === walletKey.toLowerCase()
+      ).length;
+      setMyPositionCount(n);
+    };
+    syncLocal();
+    const onChange = () => syncLocal();
+    window.addEventListener("higher:positions-changed", onChange);
+    window.addEventListener("storage", onChange);
+    return () => {
+      window.removeEventListener("higher:positions-changed", onChange);
+      window.removeEventListener("storage", onChange);
+    };
+  }, [walletKey, token.mint]);
+
   // Always fetch the list so count matches the Holders table (excludes pool vault).
   const { holders, loading: holdersListLoading, count: listCount } = useMintHolders(
     token.mint,
@@ -55,16 +80,6 @@ export default function TokenGraduatedFeed({
         : listCount === 0 && !holdersListLoading
           ? 0
           : holderCount;
-
-  const positionCount = useMemo(
-    () =>
-      new Set(
-        trades
-          .filter(t => t.type === "long" || t.type === "short")
-          .map(t => `${t.trader}:${t.type}`)
-      ).size,
-    [trades]
-  );
 
   const spotSol =
     omnipairPoolSnapshot?.spotPriceSol && omnipairPoolSnapshot.spotPriceSol > 0
@@ -97,9 +112,11 @@ export default function TokenGraduatedFeed({
           )}
         >
           Positions
-          <span className="ml-2 text-sm font-normal text-white/40">
-            {formatNumber(positionCount)}
-          </span>
+          {walletKey ? (
+            <span className="ml-2 text-sm font-normal text-white/40">
+              {formatNumber(myPositionCount)}
+            </span>
+          ) : null}
         </button>
         <button
           type="button"
@@ -132,11 +149,11 @@ export default function TokenGraduatedFeed({
         ) : section === "positions" ? (
           <TokenPositionsList
             mint={token.mint}
-            trades={trades}
             spotSol={spotSol}
             solUsd={solUsd}
-            connectedWallet={publicKey?.toBase58() ?? null}
+            connectedWallet={walletKey}
             omnipairPoolSnapshot={omnipairPoolSnapshot}
+            onCountChange={setMyPositionCount}
           />
         ) : (
           <TokenHoldersList

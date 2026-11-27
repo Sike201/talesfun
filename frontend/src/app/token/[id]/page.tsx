@@ -48,6 +48,11 @@ import toast from "react-hot-toast";
 import { cn } from "@/lib/utils";
 import { logTokenStateChainVsSupabase } from "@/lib/debugChainVsSupabase";
 import { logBondingPanelDebug } from "@/lib/bondingCurveQuote";
+import {
+  bondingLiquidityUsd,
+  graduatedLiquidityUsd,
+  marketCapUsdFromSpot,
+} from "@/lib/marketStats";
 import { readLocalTradeHistory } from "@/lib/recentActivityLocal";
 
 /** Row shape from Supabase / GET /api/tokens/[mint]/trades */
@@ -670,21 +675,26 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
     ? omnipairSnapshot!.spotPriceSol
     : token.currentPrice;
   const priceUSD = solUsd != null ? displayPriceSol * solUsd : null;
-  const bondingLiqUsdFallback =
-    solUsd != null ? token.solRaised * solUsd + token.marketCap * 0.2 : null;
-  const displayLiqUsd =
-    omnipairSpotLive && solUsd != null && omnipairSnapshot
-      ? (Number(omnipairSnapshot.reserveSolRaw) / 10 ** omnipairSnapshot.solDecimals) *
-          solUsd +
-        (Number(omnipairSnapshot.reserveProjectRaw) /
-          10 ** omnipairSnapshot.projectTokenDecimals) *
-          displayPriceSol *
-          solUsd
-      : bondingLiqUsdFallback;
+  // Pump.fun-style: FDV = spot × supply × SOL/USD; liquidity = 2 × SOL side.
   const displayMarketCapUsd =
-    omnipairSpotLive && solUsd != null
-      ? displayPriceSol * token.totalSupply * solUsd
+    solUsd != null && displayPriceSol > 0 && token.totalSupply > 0
+      ? marketCapUsdFromSpot({
+          spotSol: displayPriceSol,
+          totalSupply: token.totalSupply,
+          solUsd,
+        })
       : token.marketCap;
+  const displayLiqUsd =
+    solUsd == null
+      ? null
+      : omnipairSpotLive && omnipairSnapshot
+        ? graduatedLiquidityUsd({
+            reserveSol:
+              Number(omnipairSnapshot.reserveSolRaw) /
+              10 ** omnipairSnapshot.solDecimals,
+            solUsd,
+          })
+        : bondingLiquidityUsd({ solRaised: token.solRaised, solUsd });
 
   const volume24hUsdLabel = volume24hUsdFormatted(volume24hLamportsStr, solUsd);
   const volume24hSol = lamportsStrToSol(volume24hLamportsStr);
