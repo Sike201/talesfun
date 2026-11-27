@@ -32,6 +32,7 @@ import {
 } from "./omnipairProgram";
 import type { OmnipairPoolSnapshot } from "./omnipairPoolState";
 import { sendOmnipairSwapTx } from "./omnipairSwap";
+import { clampLeverage, poolSafeCf } from "./poolMaxLeverage";
 
 const CU = 900_000;
 
@@ -353,7 +354,8 @@ export async function sendOmnipairLeverageStepTx(params: {
     slippagePercent = 3,
   } = params;
   if (!(marginUi > 0)) throw new Error("Enter margin");
-  const lev = Math.min(5, Math.max(1, leverage));
+  const reserveSol = Number(snapshot.reserveSolRaw) / 1e9;
+  const lev = clampLeverage(leverage, 5);
   const spot = snapshot.spotPriceSol;
   if (!(spot > 0)) throw new Error("Pool spot unavailable");
 
@@ -361,8 +363,8 @@ export async function sendOmnipairLeverageStepTx(params: {
   // Docs (impact-aware CF): borrow limit = coll × CF × 0.95, CF often ≪ 85% on thin
   // pools because liquidation impact is simulated against AMM reserves.
   const borrowFraction = Math.max(0, lev - 1) / lev;
-  // Cap CF hard for fresh / thin graduation pools (~0.5 SOL depth).
-  const safeCf = 0.22;
+  // Depth-aware CF — same curve as the leverage slider Max.
+  const safeCf = poolSafeCf(reserveSol);
 
   const isBorrowPowerErr = (e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);

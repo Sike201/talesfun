@@ -190,7 +190,9 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   const feedInitialSection =
     feedSectionParam === "holders" || feedSectionParam === "liquidity"
       ? ("holders" as const)
-      : undefined;
+      : feedSectionParam === "positions"
+        ? ("positions" as const)
+        : undefined;
   const tradingInitialMode =
     leverageParam === "long" || leverageParam === "short" ? ("leverage" as const) : undefined;
   const tradingLeverageDir =

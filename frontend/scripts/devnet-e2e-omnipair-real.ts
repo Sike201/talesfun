@@ -37,6 +37,11 @@ import {
   sendOmnipairLeverageStepTx,
 } from "../src/lib/omnipairLending";
 import { upsertCanonicalTrade } from "../src/lib/persistCanonicalTrade";
+import {
+  clampLeverage,
+  poolMaxLeverage,
+  poolSafeCf,
+} from "../src/lib/poolMaxLeverage";
 
 const ROOT = path.resolve(__dirname, "..");
 const TMP = path.join(ROOT, ".e2e-tmp");
@@ -66,12 +71,27 @@ const FUND_SOL = Math.max(0.15, Number(process.env.FUND_SOL || "0.42"));
 const SKIP_FUND = process.env.SKIP_FUND === "1";
 const ROUNDS = Math.max(1, Math.min(8, Number(process.env.ROUNDS || "3")));
 
-/**
- * Leverage levels to sweep.
- * Thin-pool CF (~0.22) → meaningful max ≈ 1.28x; higher values still submit —
- * lending clamps borrow to CF (same effective size as beta.omnipair.fi).
- */
-const LEV_SWEEP = [1.1, 1.2, 1.25, 1.5, 2, 3, 5];
+/** Build 0.1-step sweep from 1.0 → pool Max (matches WakeSlider). */
+function buildLevSweep(reserveSol: number): number[] {
+  const maxLev = poolMaxLeverage(reserveSol);
+  const out: number[] = [];
+  for (let v = 1.0; v <= maxLev + 1e-9; v = Math.round((v + 0.1) * 10) / 10) {
+    out.push(clampLeverage(v, maxLev));
+  }
+  // Always include Max endpoint once.
+  if (out[out.length - 1] !== maxLev) out.push(maxLev);
+  // Cap sweep length for runtime; keep start/mid/max denser.
+  if (out.length <= 8) return out;
+  const pick = new Set<number>([
+    out[0]!,
+    out[1]!,
+    out[Math.floor(out.length / 3)]!,
+    out[Math.floor((2 * out.length) / 3)]!,
+    out[out.length - 2]!,
+    out[out.length - 1]!,
+  ]);
+  return Array.from(pick).sort((a, b) => a - b);
+}
 
 type TraderRec = { secret: number[]; pubkey: string };
 type Stats = {
@@ -460,12 +480,26 @@ async function main() {
     byLeverage: {},
     lastErrors: [],
   };
+  const depthSnap = await fetchOmnipairPoolSnapshot(
+    connection,
+    target.gammPool,
+    target.mint,
+    null
+  );
+  if (!depthSnap.ok) throw new Error(depthSnap.message);
+  const reserveSol = Number(depthSnap.data.reserveSolRaw) / 1e9;
+  const maxLev = poolMaxLeverage(reserveSol);
+  const LEV_SWEEP = buildLevSweep(reserveSol);
   log("E2E start", {
     mint: target.mint,
     symbol: target.symbol,
     pool: target.gammPool,
     traders: traders.length,
     rounds: ROUNDS,
+    reserveSol: Number(reserveSol.toFixed(4)),
+    safeCf: poolSafeCf(reserveSol),
+    maxLev,
+    levSweep: LEV_SWEEP,
     rpc: RPC.replace(/api-key=.*/, "api-key=***"),
   });
 

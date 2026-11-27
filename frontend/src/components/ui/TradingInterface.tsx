@@ -18,6 +18,18 @@ import {
 import { useWalletBalances } from "@/hooks/useWalletBalances";
 import { persistLaunchpadTrade } from "@/lib/persistLaunchpadTrade";
 import { useSolUsd } from "@/hooks/useSolUsd";
+import WakeSlider from "@/components/ui/WakeSlider";
+import {
+  clampLeverage,
+  MIN_LEVERAGE,
+  poolMaxLeverage,
+  poolSafeCf,
+} from "@/lib/poolMaxLeverage";
+import {
+  listOpenPositions,
+  markPositionValueUsd,
+  upsertOpenPosition,
+} from "@/lib/openPositions";
 
 type Mode = "swap" | "leverage" | "borrow";
 
@@ -220,51 +232,58 @@ function SlippageButton({
   );
 }
 
-/** Cap at ~1/(1−0.85)≈6.67x protocol max; thin pools rarely clear above ~3–4x. */
-const MAX_LEVERAGE_UI = 5;
-
-/* ── Leverage slider ───────────────────────────────────────────────── */
-function LeverageSlider({
+/* ── Leverage slider (WakeSlider, pool-CF capped max) ──────────────── */
+function LeverageWakeControl({
   value,
   onChange,
+  maxLev,
 }: {
   value: number;
   onChange: (v: number) => void;
+  maxLev: number;
 }) {
-  const pct = ((value - 1) / (MAX_LEVERAGE_UI - 1)) * 100;
+  const hi = Math.max(MIN_LEVERAGE + 0.1, maxLev);
   return (
     <div className="px-0.5 py-1">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
         <span className="text-[11px] font-medium text-white/45">Leverage</span>
-        <span className="text-sm font-semibold tabular-nums text-white">{value}x</span>
-      </div>
-      <input
-        type="range"
-        min={1}
-        max={MAX_LEVERAGE_UI}
-        step={1}
-        value={value}
-        onChange={e => onChange(parseInt(e.target.value))}
-        className="h-1 w-full cursor-pointer appearance-none rounded-full bg-white/10"
-        style={{
-          background: `linear-gradient(to right, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.55) ${pct}%, rgba(255,255,255,0.1) ${pct}%, rgba(255,255,255,0.1) 100%)`,
-          accentColor: "#e4e4e7",
-        }}
-      />
-      <div className="mt-1.5 flex justify-between text-[10px] text-white/30">
-        {Array.from({ length: MAX_LEVERAGE_UI }, (_, i) => i + 1).map(l => (
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold tabular-nums text-white">
+            {value.toFixed(1)}x
+          </span>
           <button
-            key={l}
             type="button"
-            onClick={() => onChange(l)}
-            className={cn(
-              "transition-colors",
-              value === l ? "font-semibold text-white/80" : "hover:text-white/50"
-            )}
+            className="rounded-md border border-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:border-white/35 hover:text-white"
+            onClick={() => onChange(hi)}
           >
-            {l}x
+            Max {hi.toFixed(1)}x
           </button>
-        ))}
+        </div>
+      </div>
+      <WakeSlider
+        value={value}
+        min={MIN_LEVERAGE}
+        max={hi}
+        step={0.1}
+        bars={36}
+        height={44}
+        restHeight={10}
+        gap={3}
+        fillColor="#f4f4f5"
+        trackColor="#27272a"
+        crestColor="#a1a1aa"
+        sensitivity={1.15}
+        reach={7}
+        skew={0.55}
+        glide={0.22}
+        smoothing={90}
+        ariaLabel="Leverage"
+        formatValue={v => `${v.toFixed(1)}x`}
+        onChange={onChange}
+      />
+      <div className="mt-1 flex justify-between text-[10px] text-white/30">
+        <span>{MIN_LEVERAGE.toFixed(1)}x</span>
+        <span>Pool max {hi.toFixed(1)}x</span>
       </div>
     </div>
   );
@@ -767,10 +786,8 @@ function LeveragePanel({
     initialDirection ?? "long"
   );
   const [size, setSize] = useState("");
-  // Slider is integer 1–5x. Leverage is locked at open; mark moves position value only.
-  const [leverage, setLeverage] = useState(2);
   const [loading, setLoading] = useState(false);
-  /** Last opened long/short — leverage stays fixed; only mark/position value updates. */
+  /** Last opened long/short — leverage stays fixed; mark moves position value only. */
   const [openPos, setOpenPos] = useState<{
     direction: "long" | "short";
     leverage: number;
@@ -782,6 +799,36 @@ function LeveragePanel({
     connected ? token.mint : undefined
   );
 
+  const reserveSol = omnipairPoolSnapshot
+    ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
+    : 0;
+  const maxLev = poolMaxLeverage(reserveSol);
+  const safeCf = poolSafeCf(reserveSol);
+  const [leverage, setLeverage] = useState(() =>
+    clampLeverage(Math.min(1.5, maxLev), maxLev)
+  );
+
+  // Keep selection inside pool max when depth / CF changes.
+  useEffect(() => {
+    setLeverage(prev => clampLeverage(prev, maxLev));
+  }, [maxLev]);
+
+  useEffect(() => {
+    if (!walletAdapter.publicKey) return;
+    const mine = listOpenPositions(token.mint).find(
+      p => p.wallet === walletAdapter.publicKey!.toBase58()
+    );
+    if (mine) {
+      setOpenPos({
+        direction: mine.direction,
+        leverage: mine.leverage,
+        marginUi: mine.marginUi,
+        entrySpotSol: mine.entrySpotSol,
+        entrySolUsd: mine.entrySolUsd,
+      });
+    }
+  }, [token.mint, walletAdapter.publicKey]);
+
   const sizeNum = parseFloat(size) || 0;
   const spot =
     omnipairPoolSnapshot?.spotPriceSol && omnipairPoolSnapshot.spotPriceSol > 0
@@ -789,33 +836,20 @@ function LeveragePanel({
       : token.currentPrice;
   const usd = solUsd ?? 140;
   const currentPriceUSD = spot * usd;
-  const lockedLev = Math.min(leverage, MAX_LEVERAGE_UI);
+  const lockedLev = clampLeverage(leverage, maxLev);
   const previewPosValueUsd =
     direction === "long"
       ? sizeNum * lockedLev * currentPriceUSD
       : sizeNum * lockedLev * usd;
   const liqPrice =
     direction === "long"
-      ? currentPriceUSD * (1 - 1 / Math.max(lockedLev, 1.1) + 0.05)
-      : currentPriceUSD * (1 + 1 / Math.max(lockedLev, 1.1) - 0.05);
+      ? currentPriceUSD * (1 - 1 / Math.max(lockedLev, 1.05) + 0.05)
+      : currentPriceUSD * (1 + 1 / Math.max(lockedLev, 1.05) - 0.05);
 
-  // Open position: leverage never adjusts — only position value tracks mark.
-  const openEntryNotionalUsd = openPos
-    ? openPos.direction === "long"
-      ? openPos.marginUi * openPos.entrySpotSol * openPos.entrySolUsd * openPos.leverage
-      : openPos.marginUi * openPos.entrySolUsd * openPos.leverage
-    : 0;
-  const openMarkRatio =
-    openPos && openPos.entrySpotSol > 0 ? spot / openPos.entrySpotSol : 1;
-  const openPosValueUsd = openPos
-    ? openPos.direction === "long"
-      ? openEntryNotionalUsd * openMarkRatio
-      : openEntryNotionalUsd * (2 - openMarkRatio)
-    : 0;
+  const openMark = openPos
+    ? markPositionValueUsd(openPos, spot)
+    : { entryUsd: 0, markUsd: 0 };
 
-  const reserveSol = omnipairPoolSnapshot
-    ? Number(omnipairPoolSnapshot.reserveSolRaw) / 1e9
-    : 0;
   // Cap margin so borrow stays within ~12% of pool SOL depth (impact-aware CF).
   const maxShortMarginSol = Math.max(0.001, reserveSol * 0.12);
   const walletSol = solBalanceLamports / 1e9;
@@ -855,7 +889,7 @@ function LeveragePanel({
         signTransaction: walletAdapter.signTransaction!.bind(walletAdapter),
         signAllTransactions: walletAdapter.signAllTransactions!.bind(walletAdapter),
       } as AnchorWallet;
-      const levUsed = Math.min(leverage, MAX_LEVERAGE_UI);
+      const levUsed = clampLeverage(leverage, maxLev);
       const { sigs } = await sendOmnipairLeverageStepTx({
         connection,
         wallet,
@@ -872,10 +906,22 @@ function LeveragePanel({
         entrySpotSol: spot,
         entrySolUsd: usd,
       });
+      const primarySig = sigs[sigs.length - 1] || sigs[0];
+      if (walletAdapter.publicKey) {
+        upsertOpenPosition({
+          mint: token.mint,
+          wallet: walletAdapter.publicKey.toBase58(),
+          direction,
+          leverage: levUsed,
+          marginUi: margin,
+          entrySpotSol: spot,
+          entrySolUsd: usd,
+          signature: primarySig || "",
+        });
+      }
       toast.success(
         `${direction === "long" ? "Long" : "Short"} ${levUsed.toFixed(1)}x opened — leverage locked`
       );
-      const primarySig = sigs[sigs.length - 1] || sigs[0];
       if (primarySig && walletAdapter.publicKey) {
         const solRaw =
           direction === "short"
@@ -933,7 +979,7 @@ function LeveragePanel({
           Isolated
         </span>
         <span className="text-[10px] text-white/40">
-          Leverage locks at open · mark moves position value
+          Max {maxLev.toFixed(1)}x · CF {(safeCf * 100).toFixed(0)}% · {reserveSol > 0 ? `${reserveSol.toFixed(2)} SOL depth` : "awaiting pool"}
         </span>
       </div>
 
@@ -946,7 +992,7 @@ function LeveragePanel({
                 openPos.direction === "long" ? "text-emerald-400" : "text-red-400"
               )}
             >
-              Open {openPos.direction} · {openPos.leverage.toFixed(1)}x
+              Open {openPos.direction} · {openPos.leverage.toFixed(1)}x locked
             </span>
             <button
               type="button"
@@ -959,15 +1005,15 @@ function LeveragePanel({
           <div className="mt-1.5 space-y-0.5">
             <TalesTradeDetailsRow
               label="Leverage"
-              value={`${openPos.leverage.toFixed(1)}x (locked)`}
+              value={`${openPos.leverage.toFixed(1)}x`}
             />
             <TalesTradeDetailsRow
               label="Position value"
-              value={formatUSD(Math.max(0, openPosValueUsd))}
+              value={formatUSD(openMark.markUsd)}
               valueClassName={
-                openPosValueUsd < openEntryNotionalUsd
+                openMark.markUsd < openMark.entryUsd
                   ? "text-red-400"
-                  : openPosValueUsd > openEntryNotionalUsd
+                  : openMark.markUsd > openMark.entryUsd
                     ? "text-emerald-400"
                     : undefined
               }
@@ -1004,9 +1050,10 @@ function LeveragePanel({
         />
       </TalesTradeField>
 
-      <LeverageSlider
-        value={Math.min(leverage, MAX_LEVERAGE_UI)}
-        onChange={v => setLeverage(Math.min(v, MAX_LEVERAGE_UI))}
+      <LeverageWakeControl
+        value={lockedLev}
+        maxLev={maxLev}
+        onChange={v => setLeverage(clampLeverage(v, maxLev))}
       />
 
       <div className="space-y-0 px-0.5 py-1">
@@ -1032,11 +1079,11 @@ function LeveragePanel({
         />
       </div>
 
-      {leverage >= 4 && (
+      {lockedLev >= Math.max(3, maxLev - 0.2) && maxLev >= 3 && (
         <div className="flex gap-2 px-0.5 py-1">
           <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-300/80" />
           <p className="text-[10px] leading-relaxed text-white/40">
-            High leverage on thin pools often hits BorrowingPowerExceeded — keep margin small.
+            Near pool max — keep margin small so borrow clears impact-aware CF.
           </p>
         </div>
       )}
