@@ -6,6 +6,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  type TransactionInstruction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
@@ -424,28 +425,22 @@ export type SendOmnipairSwapTxParams = {
   slippagePercent: number;
 };
 
-/**
- * Build and submit an Omnipair `swap` for this launchpad pool (WSOL ↔ project token).
- *
- * **Buy:** wraps SOL → WSOL ATA (`SystemProgram.transfer` + `syncNative`), swaps WSOL → token.
- * **Sell:** swaps token → WSOL; output stays in the wallet WSOL ATA (native SOL unwrap is optional / wallet UI).
- */
-export async function sendOmnipairSwapTx(
-  params: SendOmnipairSwapTxParams
-): Promise<OmnipairSwapTxResult> {
-  const duskProgramId = new PublicKey(
-    process.env.NEXT_PUBLIC_DUSK_PROGRAM_ID ||
-      "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
-  );
-  const duskDeployed = await params.connection.getAccountInfo(
-    duskProgramId,
-    "confirmed"
-  );
-  if (duskDeployed?.executable) {
-    const { sendDuskSwapTx } = await import("./duskMarket");
-    return sendDuskSwapTx(params);
-  }
+export type BuildOmnipairSwapIxsResult = {
+  ixs: TransactionInstruction[];
+  signers: Keypair[];
+  amountIn: bigint;
+  side: OmnipairSwapSide;
+  projectMint: PublicKey;
+  owner: PublicKey;
+};
 
+/**
+ * Build swap instructions (no submit). Used to bundle leverage open/close into 1 signature.
+ * Does not include compute-budget ix — caller should prepend one.
+ */
+export async function buildOmnipairSwapIxs(
+  params: SendOmnipairSwapTxParams
+): Promise<BuildOmnipairSwapIxsResult> {
   const { connection, wallet, snapshot, side, amountUi, slippagePercent } = params;
   const owner = wallet.publicKey;
   if (!owner) throw new Error("Wallet not connected");
@@ -793,21 +788,64 @@ export async function sendOmnipairSwapTx(
     );
   }
 
+  // Drop the compute-budget ix — bundlers / sendOmnipairSwapTx add their own.
+  const withoutCu = ixs.filter(
+    ix => !ix.programId.equals(ComputeBudgetProgram.programId)
+  );
+  return {
+    ixs: withoutCu,
+    signers: extraSigners,
+    amountIn,
+    side,
+    projectMint,
+    owner,
+  };
+}
+
+/**
+ * Build and submit an Omnipair `swap` for this launchpad pool (WSOL ↔ project token).
+ *
+ * **Buy:** wraps SOL → WSOL ATA (`SystemProgram.transfer` + `syncNative`), swaps WSOL → token.
+ * **Sell:** swaps token → WSOL; output stays in the wallet WSOL ATA (native SOL unwrap is optional / wallet UI).
+ */
+export async function sendOmnipairSwapTx(
+  params: SendOmnipairSwapTxParams
+): Promise<OmnipairSwapTxResult> {
+  const duskProgramId = new PublicKey(
+    process.env.NEXT_PUBLIC_DUSK_PROGRAM_ID ||
+      "DuskWhswJYrzABDn8GqQD191X9RobRi5jhgGntXEdnKj"
+  );
+  const duskDeployed = await params.connection.getAccountInfo(
+    duskProgramId,
+    "confirmed"
+  );
+  if (duskDeployed?.executable) {
+    const { sendDuskSwapTx } = await import("./duskMarket");
+    return sendDuskSwapTx(params);
+  }
+
+  const { connection, wallet, snapshot, side, amountUi } = params;
+  const built = await buildOmnipairSwapIxs(params);
+  const { ixs, signers, amountIn, projectMint, owner } = built;
+
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
   const tx = new Transaction({
     feePayer: owner,
     recentBlockhash: blockhash,
   });
-  tx.add(...ixs);
-  if (extraSigners.length > 0) {
-    tx.partialSign(...extraSigners);
+  tx.add(
+    ComputeBudgetProgram.setComputeUnitLimit({ units: CU_SWAP }),
+    ...ixs
+  );
+  if (signers.length > 0) {
+    tx.partialSign(...signers);
   }
 
   if (side === "sell") {
     console.info("[omnipair:swap] SELL: submit started (sign next)", {
       amountUi,
-      pair: pairPk.toBase58(),
-      usingTempWsol: !!tempWsolKp,
+      pair: snapshot.pair.toBase58(),
+      extraSigners: signers.length,
     });
   }
 

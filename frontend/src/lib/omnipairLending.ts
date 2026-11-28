@@ -6,6 +6,7 @@ import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import {
   ComputeBudgetProgram,
   Connection,
+  Keypair,
   PublicKey,
   SystemProgram,
   Transaction,
@@ -32,7 +33,7 @@ import {
   omnipairEventAuthorityPda,
 } from "./omnipairProgram";
 import type { OmnipairPoolSnapshot } from "./omnipairPoolState";
-import { sendOmnipairSwapTx } from "./omnipairSwap";
+import { buildOmnipairSwapIxs } from "./omnipairSwap";
 import { clampLeverage, poolSafeCf } from "./poolMaxLeverage";
 import { buildPlatformFeeTransferIx, PLATFORM_FEE_BPS } from "./platformFee";
 
@@ -72,16 +73,22 @@ async function sendTx(
   connection: Connection,
   wallet: AnchorWallet,
   ixs: Parameters<Transaction["add"]>[0][],
-  label: string
+  label: string,
+  opts?: { extraSigners?: Keypair[]; computeUnits?: number }
 ): Promise<string> {
   const tx = new Transaction().add(
-    ComputeBudgetProgram.setComputeUnitLimit({ units: CU }),
+    ComputeBudgetProgram.setComputeUnitLimit({
+      units: opts?.computeUnits ?? CU,
+    }),
     ...ixs
   );
   tx.feePayer = wallet.publicKey;
   const { blockhash, lastValidBlockHeight } =
     await connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = blockhash;
+  if (opts?.extraSigners?.length) {
+    tx.partialSign(...opts.extraSigners);
+  }
   const signed = await wallet.signTransaction(tx);
   const sig = await connection.sendRawTransaction(signed.serialize(), {
     skipPreflight: false,
@@ -95,18 +102,13 @@ async function sendTx(
   return sig;
 }
 
-/**
- * Deposit project tokens (or SOL) as collateral into the Omnipair pair position.
- */
-export async function sendOmnipairAddCollateralTx(params: {
+async function buildAddCollateralIxs(params: {
   connection: Connection;
   wallet: AnchorWallet;
   snapshot: OmnipairPoolSnapshot;
-  /** Which side to post as collateral */
   collateralMint: PublicKey;
-  /** Raw amount (lamports / token base units) */
   amountRaw: bigint;
-}): Promise<string> {
+}): Promise<TransactionInstruction[]> {
   const { connection, wallet, snapshot, collateralMint, amountRaw } = params;
   const owner = wallet.publicKey;
   if (!owner) throw new Error("Wallet not connected");
@@ -129,13 +131,12 @@ export async function sendOmnipairAddCollateralTx(params: {
     tokenProgram
   );
 
-  const ixs = [];
+  const ixs: TransactionInstruction[] = [];
   if (collateralMint.equals(NATIVE_MINT)) {
     const fee = buildPlatformFeeTransferIx({
       from: owner,
       solUi: Number(amountRaw) / 1e9,
     });
-    // Keep ≥0.01 SOL for rent / subsequent borrow+swap legs.
     const bal = await connection.getBalance(owner, "confirmed");
     const feeLamports = fee?.feeLamports ?? BigInt(0);
     const need =
@@ -172,7 +173,6 @@ export async function sendOmnipairAddCollateralTx(params: {
     if (!(await connection.getAccountInfo(userAta, "confirmed"))) {
       throw new Error("No token balance to post as collateral");
     }
-    // Token collateral: skim fee in SOL ≈ token amount × spot.
     const tokenUi =
       Number(amountRaw) / 10 ** snapshot.projectTokenDecimals;
     const notionalSol =
@@ -207,21 +207,35 @@ export async function sendOmnipairAddCollateralTx(params: {
       program: OMNIPAIR_PROGRAM_ID,
     } as any)
     .instruction();
-
   ixs.push(ix);
-  return sendTx(connection, wallet, ixs, "add_collateral");
+  return ixs;
 }
 
 /**
- * Borrow `borrowMint` against existing collateral (isolated pair market).
+ * Deposit project tokens (or SOL) as collateral into the Omnipair pair position.
  */
-export async function sendOmnipairBorrowTx(params: {
+export async function sendOmnipairAddCollateralTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  /** Which side to post as collateral */
+  collateralMint: PublicKey;
+  /** Raw amount (lamports / token base units) */
+  amountRaw: bigint;
+}): Promise<string> {
+  const ixs = await buildAddCollateralIxs(params);
+  return sendTx(params.connection, params.wallet, ixs, "add_collateral");
+}
+
+async function buildBorrowIxs(params: {
   connection: Connection;
   wallet: AnchorWallet;
   snapshot: OmnipairPoolSnapshot;
   borrowMint: PublicKey;
   amountRaw: bigint;
-}): Promise<string> {
+  /** Keep borrowed WSOL in ATA (needed when same-tx swap will spend it). */
+  keepWsolAta?: boolean;
+}): Promise<TransactionInstruction[]> {
   const { connection, wallet, snapshot, borrowMint, amountRaw } = params;
   const owner = wallet.publicKey;
   if (!owner) throw new Error("Wallet not connected");
@@ -244,7 +258,7 @@ export async function sendOmnipairBorrowTx(params: {
     tokenProgram
   );
 
-  const ixs = [
+  const ixs: TransactionInstruction[] = [
     createAssociatedTokenAccountIdempotentInstruction(
       owner,
       userAta,
@@ -255,7 +269,6 @@ export async function sendOmnipairBorrowTx(params: {
     ),
   ];
 
-  // Platform overlay on SOL borrows (taken from wallet, not from borrowed WSOL).
   if (borrowMint.equals(NATIVE_MINT)) {
     const fee = buildPlatformFeeTransferIx({
       from: owner,
@@ -291,14 +304,27 @@ export async function sendOmnipairBorrowTx(params: {
     .instruction();
   ixs.push(ix);
 
-  // If borrowing WSOL, unwrap to native SOL for wallet UX.
-  if (borrowMint.equals(NATIVE_MINT)) {
+  // Unwrap WSOL unless a later same-tx swap will spend it as WSOL.
+  if (borrowMint.equals(NATIVE_MINT) && !params.keepWsolAta) {
     ixs.push(
       createCloseAccountInstruction(userAta, owner, owner, [], TOKEN_PROGRAM_ID)
     );
   }
+  return ixs;
+}
 
-  return sendTx(connection, wallet, ixs, "borrow");
+/**
+ * Borrow `borrowMint` against existing collateral (isolated pair market).
+ */
+export async function sendOmnipairBorrowTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  borrowMint: PublicKey;
+  amountRaw: bigint;
+}): Promise<string> {
+  const ixs = await buildBorrowIxs(params);
+  return sendTx(params.connection, params.wallet, ixs, "borrow");
 }
 
 /**
@@ -314,7 +340,7 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
   /** Optional override for SOL borrow UI; defaults to ~60% of collateral value */
   borrowSolUi?: number;
 }): Promise<{
-  /** Wallet signatures required (collateral + borrow; 2 today). */
+  /** Prefer 1 bundled signature (add collateral + borrow). */
   sigs: string[];
   collateralSig: string;
   borrowSig: string;
@@ -362,38 +388,45 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
       : existing.collateral1
     : BigInt(0);
 
-  const sigs: string[] = [];
-  let collateralSig = "";
-  if (existingProjectColl < collRaw) {
-    const addRaw =
-      existingProjectColl > BigInt(0)
+  let needAdd =
+    existingProjectColl < collRaw
+      ? existingProjectColl > BigInt(0)
         ? collRaw - existingProjectColl
-        : collRaw;
-    collateralSig = await sendOmnipairAddCollateralTx({
-      connection,
-      wallet,
-      snapshot,
-      collateralMint: snapshot.projectMint,
-      amountRaw: addRaw,
-    });
-    sigs.push(collateralSig);
-  }
+        : collRaw
+      : BigInt(0);
 
-  let borrowSig = "";
   let lastErr: unknown;
   for (let attempt = 0; attempt < 8; attempt++) {
     if (borrowRaw <= BigInt(0)) break;
     try {
-      borrowSig = await sendOmnipairBorrowTx({
+      const ixs: TransactionInstruction[] = [];
+      if (needAdd > BigInt(0)) {
+        ixs.push(
+          ...(await buildAddCollateralIxs({
+            connection,
+            wallet,
+            snapshot,
+            collateralMint: snapshot.projectMint,
+            amountRaw: needAdd,
+          }))
+        );
+      }
+      ixs.push(
+        ...(await buildBorrowIxs({
+          connection,
+          wallet,
+          snapshot,
+          borrowMint: NATIVE_MINT,
+          amountRaw: borrowRaw,
+        }))
+      );
+      const sig = await sendTx(
         connection,
         wallet,
-        snapshot,
-        borrowMint: NATIVE_MINT,
-        amountRaw: borrowRaw,
-      });
-      sigs.push(borrowSig);
-      lastErr = undefined;
-      break;
+        ixs,
+        needAdd > BigInt(0) ? "borrow_open_1sig" : "borrow_1sig"
+      );
+      return { sigs: [sig], collateralSig: sig, borrowSig: sig };
     } catch (e) {
       lastErr = e;
       if (!isBorrowPowerErr(e)) throw e;
@@ -401,19 +434,23 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
       console.warn(
         `[omnipair:borrow] borrow backoff — retry @ attempt ${attempt + 1}`
       );
+      // After a failed bundle, collateral may already be posted — don't double-add.
+      const mid = await fetchOmnipairUserPosition({
+        connection,
+        wallet,
+        snapshot,
+      });
+      const have = mid
+        ? mid.token0.equals(snapshot.projectMint)
+          ? mid.collateral0
+          : mid.collateral1
+        : BigInt(0);
+      needAdd = have >= collRaw ? BigInt(0) : collRaw - have;
     }
   }
-  if (!borrowSig) {
-    throw lastErr instanceof Error
-      ? lastErr
-      : new Error("BorrowingPowerExceeded after backoff");
-  }
-
-  return {
-    sigs,
-    collateralSig: collateralSig || "already-posted",
-    borrowSig,
-  };
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("BorrowingPowerExceeded after backoff");
 }
 
 /**
@@ -446,11 +483,9 @@ export async function sendOmnipairLeverageStepTx(params: {
   const spot = snapshot.spotPriceSol;
   if (!(spot > 0)) throw new Error("Pool spot unavailable");
 
-  const sigs: string[] = [];
-  // Docs (impact-aware CF): borrow limit = coll × CF × 0.95, CF often ≪ 85% on thin
-  // pools because liquidation impact is simulated against AMM reserves.
+  // Docs (impact-aware CF): borrow limit = coll × CF × 0.95.
+  // Bundle collateral → borrow → swap into **one wallet signature** (Omnipair sequential ixs).
   const borrowFraction = Math.max(0, lev - 1) / lev;
-  // Depth-aware CF — same curve as the leverage slider Max.
   const safeCf = poolSafeCf(reserveSol);
 
   const isBorrowPowerErr = (e: unknown) => {
@@ -465,136 +500,189 @@ export async function sendOmnipairLeverageStepTx(params: {
     );
   };
 
-  /** Step down borrow size until it clears impact-aware CF / debt math (thin-pool safe). */
-  const borrowWithBackoff = async (
-    borrowMint: PublicKey,
-    initialRaw: bigint
-  ): Promise<{ sig: string; usedRaw: bigint }> => {
-    // Start smaller for project-token borrows (short path) — debt share math overflows on thin pools.
-    let amount = borrowMint.equals(NATIVE_MINT)
-      ? initialRaw
-      : (initialRaw * BigInt(35)) / BigInt(100);
+  if (direction === "long") {
+    const dec = snapshot.projectTokenDecimals;
+    let collRaw = BigInt(Math.floor(marginUi * 10 ** dec));
+    const collValueSol = marginUi * spot;
+    // Conservative start — no mid-tx backoff when bundling.
+    let borrowSol =
+      collValueSol * Math.min(borrowFraction, safeCf) * 0.75;
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      if (amount <= BigInt(0)) break;
-      try {
-        const sig = await sendOmnipairBorrowTx({
+    for (let attempt = 0; attempt < 6; attempt++) {
+      // Skip re-adding collateral if a prior attempt already posted it.
+      const mid = await fetchOmnipairUserPosition({
+        connection,
+        wallet,
+        snapshot,
+      });
+      const haveColl = mid
+        ? mid.token0.equals(snapshot.projectMint)
+          ? mid.collateral0
+          : mid.collateral1
+        : BigInt(0);
+      const addRaw =
+        haveColl >= collRaw ? BigInt(0) : collRaw - haveColl;
+
+      if (!(borrowSol > 0.000_001) && lev <= 1.05) {
+        if (addRaw <= BigInt(0)) return { sigs: [] };
+        const ixs = await buildAddCollateralIxs({
           connection,
           wallet,
           snapshot,
-          borrowMint,
-          amountRaw: amount,
+          collateralMint: snapshot.projectMint,
+          amountRaw: addRaw,
         });
-        return { sig, usedRaw: amount };
+        const sig = await sendTx(connection, wallet, ixs, "leverage_long_1x");
+        return { sigs: [sig] };
+      }
+      if (!(borrowSol > 0.000_001)) break;
+      const borrowRaw = BigInt(Math.floor(borrowSol * 1e9));
+      try {
+        const ixs: TransactionInstruction[] = [];
+        if (addRaw > BigInt(0)) {
+          ixs.push(
+            ...(await buildAddCollateralIxs({
+              connection,
+              wallet,
+              snapshot,
+              collateralMint: snapshot.projectMint,
+              amountRaw: addRaw,
+            }))
+          );
+        }
+        ixs.push(
+          ...(await buildBorrowIxs({
+            connection,
+            wallet,
+            snapshot,
+            borrowMint: NATIVE_MINT,
+            amountRaw: borrowRaw,
+            keepWsolAta: true,
+          }))
+        );
+        // Spend borrowed WSOL → project in same tx (no unwrap).
+        const swap = await buildOmnipairSwapIxs({
+          connection,
+          wallet,
+          snapshot,
+          side: "buy",
+          amountUi: Number(borrowRaw) / 1e9,
+          slippagePercent,
+        });
+        ixs.push(...swap.ixs);
+        const sig = await sendTx(
+          connection,
+          wallet,
+          ixs,
+          "leverage_long_1sig",
+          { extraSigners: swap.signers, computeUnits: 1_400_000 }
+        );
+        return { sigs: [sig] };
       } catch (e) {
         lastErr = e;
-        if (!isBorrowPowerErr(e)) throw e;
-        amount = (amount * BigInt(50)) / BigInt(100);
+        const msg = e instanceof Error ? e.message : String(e);
+        if (
+          !isBorrowPowerErr(e) &&
+          !/0x1781|6017|SlippageExceeded/i.test(msg)
+        ) {
+          throw e;
+        }
+        borrowSol *= 0.5;
         console.warn(
-          `[omnipair:leverage] borrow backoff — retry @ ${(Number(amount) / Number(initialRaw || BigInt(1)) * 100).toFixed(0)}%`
+          `[omnipair:leverage] long bundle backoff @ ${borrowSol.toPrecision(3)} SOL borrow`
         );
       }
     }
     throw lastErr instanceof Error
       ? lastErr
-      : new Error("Borrow failed after backoff");
-  };
+      : new Error("Long leverage failed after backoff");
+  }
 
-  if (direction === "long") {
-    const dec = snapshot.projectTokenDecimals;
-    const collRaw = BigInt(Math.floor(marginUi * 10 ** dec));
-    sigs.push(
-      await sendOmnipairAddCollateralTx({
-        connection,
-        wallet,
-        snapshot,
-        collateralMint: snapshot.projectMint,
-        amountRaw: collRaw,
-      })
-    );
-    const collValueSol = marginUi * spot;
-    const borrowSol = collValueSol * Math.min(borrowFraction, safeCf) * 0.9;
-    if (borrowSol > 0.000_001) {
-      const borrowRaw = BigInt(Math.floor(borrowSol * 1e9));
-      const { sig, usedRaw } = await borrowWithBackoff(NATIVE_MINT, borrowRaw);
-      sigs.push(sig);
-      const usedSol = Number(usedRaw) / 1e9;
-      const swap = await sendOmnipairSwapTx({
-        connection,
-        wallet,
-        snapshot,
-        side: "buy",
-        amountUi: usedSol,
-        slippagePercent,
-      });
-      sigs.push(swap.signature);
-    }
-  } else {
-    const collRaw = BigInt(Math.floor(marginUi * 1e9));
-    sigs.push(
-      await sendOmnipairAddCollateralTx({
-        connection,
-        wallet,
-        snapshot,
-        collateralMint: NATIVE_MINT,
-        amountRaw: collRaw,
-      })
-    );
-    // Shorts sell borrowed project tokens into the pool — keep borrow smaller than longs.
-    const shortCf = Math.min(safeCf, 0.14);
-    const borrowSolValue = marginUi * Math.min(borrowFraction, shortCf) * 0.85;
+  // Short: SOL collateral → borrow project → sell project (1 sig).
+  const collRawTarget = BigInt(Math.floor(marginUi * 1e9));
+  const shortCf = Math.min(safeCf, 0.14);
+  let borrowSolValue =
+    marginUi * Math.min(borrowFraction, shortCf) * 0.55;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const mid = await fetchOmnipairUserPosition({
+      connection,
+      wallet,
+      snapshot,
+    });
+    const haveSolColl = mid
+      ? NATIVE_MINT.equals(mid.token0)
+        ? mid.collateral0
+        : mid.collateral1
+      : BigInt(0);
+    const addRaw =
+      haveSolColl >= collRawTarget ? BigInt(0) : collRawTarget - haveSolColl;
+
     const borrowTokenUi = borrowSolValue / spot;
-    if (borrowTokenUi > 0) {
-      const borrowRaw = BigInt(
-        Math.floor(borrowTokenUi * 10 ** snapshot.projectTokenDecimals)
-      );
-      const { sig, usedRaw } = await borrowWithBackoff(
-        snapshot.projectMint,
-        borrowRaw
-      );
-      sigs.push(sig);
-      const usedTokenUi =
-        Number(usedRaw) / 10 ** snapshot.projectTokenDecimals;
-      // Sell less than borrowed + wider slippage — thin pools blow past CPMM minOut.
-      const sellUi = usedTokenUi * 0.85;
-      const shortSlip = Math.max(slippagePercent, 20);
-      let swapSig = "";
-      let lastSwapErr: unknown;
-      let attemptUi = sellUi;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        if (!(attemptUi > 0)) break;
-        try {
-          const swap = await sendOmnipairSwapTx({
+    if (!(borrowTokenUi > 0)) break;
+    const borrowRaw = BigInt(
+      Math.floor(borrowTokenUi * 10 ** snapshot.projectTokenDecimals)
+    );
+    const sellUi =
+      (Number(borrowRaw) / 10 ** snapshot.projectTokenDecimals) * 0.85;
+    const shortSlip = Math.max(slippagePercent, 20) + attempt * 5;
+    try {
+      const ixs: TransactionInstruction[] = [];
+      if (addRaw > BigInt(0)) {
+        ixs.push(
+          ...(await buildAddCollateralIxs({
             connection,
             wallet,
             snapshot,
-            side: "sell",
-            amountUi: attemptUi,
-            slippagePercent: shortSlip + attempt * 5,
-          });
-          swapSig = swap.signature;
-          lastSwapErr = undefined;
-          break;
-        } catch (e) {
-          lastSwapErr = e;
-          const msg = e instanceof Error ? e.message : String(e);
-          if (!/0x1781|6017|SlippageExceeded/i.test(msg)) throw e;
-          attemptUi *= 0.55;
-          console.warn(
-            `[omnipair:leverage] short sell SlippageExceeded — retry @ ${(attemptUi / sellUi * 100).toFixed(0)}%`
-          );
-        }
+            collateralMint: NATIVE_MINT,
+            amountRaw: addRaw,
+          }))
+        );
       }
-      if (!swapSig) {
-        throw lastSwapErr instanceof Error
-          ? lastSwapErr
-          : new Error("Short unwind swap failed after backoff");
+      ixs.push(
+        ...(await buildBorrowIxs({
+          connection,
+          wallet,
+          snapshot,
+          borrowMint: snapshot.projectMint,
+          amountRaw: borrowRaw,
+        }))
+      );
+      const swap = await buildOmnipairSwapIxs({
+        connection,
+        wallet,
+        snapshot,
+        side: "sell",
+        amountUi: sellUi,
+        slippagePercent: shortSlip,
+      });
+      ixs.push(...swap.ixs);
+      const sig = await sendTx(
+        connection,
+        wallet,
+        ixs,
+        "leverage_short_1sig",
+        { extraSigners: swap.signers, computeUnits: 1_400_000 }
+      );
+      return { sigs: [sig] };
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (
+        !isBorrowPowerErr(e) &&
+        !/0x1781|6017|SlippageExceeded/i.test(msg)
+      ) {
+        throw e;
       }
-      sigs.push(swapSig);
+      borrowSolValue *= 0.5;
+      console.warn(
+        `[omnipair:leverage] short bundle backoff @ attempt ${attempt + 1}`
+      );
     }
   }
-
-  return { sigs };
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("Short leverage failed after backoff");
 }
 
 const U64_MAX = new BN("18446744073709551615");
@@ -930,8 +1018,6 @@ export async function sendOmnipairClosePositionTx(params: {
     return { sigs: [], alreadyClosed: true };
   }
 
-  const sigs: string[] = [];
-
   // Infer direction from debt side when not provided.
   const direction =
     params.direction ??
@@ -943,7 +1029,10 @@ export async function sendOmnipairClosePositionTx(params: {
           ? "short"
           : "long");
 
-  // Optional pre-tx: acquire the asset needed to repay (only when wallet is short).
+  // One signature: optional cover-swap + repay + withdraw (Omnipair sequential ixs).
+  const closeIxs: TransactionInstruction[] = [];
+  const extraSigners: Keypair[] = [];
+
   if (direction === "short" && debtProject > BigInt(0)) {
     const needUi =
       (Number(debtProject) / 10 ** snapshot.projectTokenDecimals) * 1.02;
@@ -959,7 +1048,7 @@ export async function sendOmnipairClosePositionTx(params: {
     if (haveUi + 1e-12 < needUi) {
       const buySol =
         ((needUi - haveUi) * snapshot.spotPriceSol) / 0.85;
-      const swap = await sendOmnipairSwapTx({
+      const swap = await buildOmnipairSwapIxs({
         connection,
         wallet,
         snapshot,
@@ -967,7 +1056,8 @@ export async function sendOmnipairClosePositionTx(params: {
         amountUi: Math.max(buySol, 0.001),
         slippagePercent: Math.max(slippagePercent, 12),
       });
-      sigs.push(swap.signature);
+      closeIxs.push(...swap.ixs);
+      extraSigners.push(...swap.signers);
     }
   } else if (debtSol > BigInt(0)) {
     const needSol = (Number(debtSol) / 1e9) * 1.02;
@@ -994,40 +1084,21 @@ export async function sendOmnipairClosePositionTx(params: {
         const haveTok = Number(bal?.value.uiAmountString ?? "0");
         const attempt = Math.min(sellUi, haveTok * 0.95);
         if (attempt > 0) {
-          let lastErr: unknown;
-          let ui = attempt;
-          for (let i = 0; i < 5; i++) {
-            try {
-              const swap = await sendOmnipairSwapTx({
-                connection,
-                wallet,
-                snapshot,
-                side: "sell",
-                amountUi: ui,
-                slippagePercent: Math.max(slippagePercent, 15) + i * 5,
-              });
-              sigs.push(swap.signature);
-              lastErr = undefined;
-              break;
-            } catch (e) {
-              lastErr = e;
-              const msg = e instanceof Error ? e.message : String(e);
-              if (!/0x1781|6017|SlippageExceeded/i.test(msg)) throw e;
-              ui *= 0.55;
-            }
-          }
-          if (lastErr) {
-            throw lastErr instanceof Error
-              ? lastErr
-              : new Error("Close unwind sell failed");
-          }
+          const swap = await buildOmnipairSwapIxs({
+            connection,
+            wallet,
+            snapshot,
+            side: "sell",
+            amountUi: attempt,
+            slippagePercent: Math.max(slippagePercent, 20),
+          });
+          closeIxs.push(...swap.ixs);
+          extraSigners.push(...swap.signers);
         }
       }
     }
   }
 
-  // Bundle repay + withdraw into a single wallet confirmation.
-  const closeIxs: TransactionInstruction[] = [];
   if (debtProject > BigInt(0)) {
     closeIxs.push(
       ...(await buildRepayIxs({
@@ -1076,19 +1147,17 @@ export async function sendOmnipairClosePositionTx(params: {
   }
 
   if (closeIxs.length === 0) {
-    if (sigs.length === 0) {
-      return { sigs: [], alreadyClosed: true };
-    }
-    return { sigs };
+    return { sigs: [], alreadyClosed: true };
   }
 
   const closeSig = await sendTx(
     connection,
     wallet,
     closeIxs,
-    "close_position_bundled"
+    "close_position_1sig",
+    { extraSigners, computeUnits: 1_400_000 }
   );
-  sigs.push(closeSig);
+  const sigs = [closeSig];
 
   // Verify debt is gone; if not, surface clearly (do not pretend success).
   const after = await fetchOmnipairUserPosition({ connection, wallet, snapshot });
