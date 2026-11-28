@@ -34,7 +34,6 @@ import { useMintHolderCount } from "@/hooks/useMintHolderCount";
 import { useOmnipairPoolState } from "@/hooks/useOmnipairPoolState";
 import { lamportsStrToSol, volume24hUsdFormatted } from "@/lib/volume24h";
 import { requestTokenPhaseSync } from "@/lib/requestTokenPhaseSync";
-import TradePanel from "@/components/ui/TradePanel";
 import TokenCandlestickChart from "@/components/ui/TokenCandlestickChart";
 import TradingInterface from "@/components/ui/TradingInterface";
 import TokenGraduatedFeed from "@/components/token/TokenGraduatedFeed";
@@ -1314,7 +1313,7 @@ function BondingPhasePage({
           </div>
 
           <div className="token-layout-rail flex flex-col gap-4">
-            <TradePanel token={token} />
+            <TradingInterface token={token} modes={["swap"]} />
           </div>
         </div>
       </div>

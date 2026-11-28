@@ -18,6 +18,13 @@ import {
 } from "@/lib/omnipairLending";
 import { useWalletBalances } from "@/hooks/useWalletBalances";
 import { persistLaunchpadTrade } from "@/lib/persistLaunchpadTrade";
+import { sendBondingSwapTx } from "@/lib/bondingSwap";
+import { useProgram } from "@/hooks/useProgram";
+import {
+  quoteBondingBuy,
+  quoteBondingSellSolUi,
+} from "@/lib/bondingCurveQuote";
+import { BN } from "@coral-xyz/anchor";
 import { useSolUsd } from "@/hooks/useSolUsd";
 import {
   clampLeverage,
@@ -169,6 +176,8 @@ interface Props {
   /** Open leverage tab (e.g. from home Long/Short links). */
   initialMode?: Mode;
   initialLeverageDirection?: "long" | "short";
+  /** Restrict visible tabs (bonding markets: `["swap"]` only). */
+  modes?: Mode[];
 }
 
 /* ── Slippage popover ──────────────────────────────────────────────── */
@@ -387,21 +396,30 @@ export default function TradingInterface({
   omnipairPoolSnapshot,
   initialMode = "swap",
   initialLeverageDirection,
+  modes,
 }: Props) {
   const { connected } = useWallet();
-  const [mode, setMode] = useState<Mode>(initialMode);
+  const allTabs: { id: Mode; label: string }[] = [
+    { id: "swap", label: "Swap" },
+    { id: "borrow", label: "Borrow" },
+    { id: "leverage", label: "Leverage" },
+  ];
+  const tabs =
+    modes && modes.length > 0
+      ? allTabs.filter(t => modes.includes(t.id))
+      : allTabs;
+  const [mode, setMode] = useState<Mode>(() => {
+    if (modes && modes.length > 0 && !modes.includes(initialMode)) {
+      return modes[0]!;
+    }
+    return initialMode;
+  });
   const usingPoolSpot =
     spotPriceSol != null && Number.isFinite(spotPriceSol) && spotPriceSol > 0;
   const omnipairSwapReady =
     usingPoolSpot &&
     omnipairPoolSnapshot != null &&
     omnipairPoolSnapshot.spotPriceSol > 0;
-
-  const tabs: { id: Mode; label: string }[] = [
-    { id: "swap", label: "Swap" },
-    { id: "borrow", label: "Borrow" },
-    { id: "leverage", label: "Leverage" },
-  ];
 
   return (
     <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c0c0c]">
@@ -602,6 +620,7 @@ function SwapPanel({
 }) {
   const { connection } = useConnection();
   const walletAdapter = useWallet();
+  const program = useProgram();
   const swapPendingRef = useRef(false);
   const {
     solBalanceLamports,
@@ -616,31 +635,64 @@ function SwapPanel({
   const [loading, setLoading] = useState(false);
   const [flipTurns, setFlipTurns] = useState(0);
 
+  const bondingMode = !omnipairPoolSnapshot;
+  const bondingQuoteReady =
+    bondingMode &&
+    !!token.chainVirtualSolLamports &&
+    !!token.chainVirtualTokenReserveRaw &&
+    !!token.chainRealTokenReserveRaw;
+
   const priceSol =
     spotPriceSol != null && spotPriceSol > 0 ? spotPriceSol : token.currentPrice;
 
   const num = parseFloat(amount) || 0;
-  const estimated =
-    side === "buy"
-      ? num > 0 && priceSol > 0 ? Math.floor(num / priceSol) : 0
-      : num * priceSol;
+
+  let estimatedTokens = 0;
+  let estimatedSol = 0;
+  if (bondingQuoteReady && num > 0) {
+    if (side === "buy") {
+      const q = quoteBondingBuy(
+        num,
+        token.chainVirtualSolLamports!,
+        token.chainVirtualTokenReserveRaw!,
+        token.chainRealTokenReserveRaw!
+      );
+      if (q) {
+        estimatedTokens = Number(q.tokensOutCappedRaw.toString()) / 1e6;
+      }
+    } else if (token.chainRealSolReserveLamports != null) {
+      const raw = Math.floor(num * 1e6);
+      if (raw > 0) {
+        const q = quoteBondingSellSolUi(
+          new BN(String(raw)),
+          token.chainVirtualSolLamports!,
+          token.chainVirtualTokenReserveRaw!,
+          token.chainRealSolReserveLamports
+        );
+        if (q) estimatedSol = Number(q.solOutRaw.toString()) / 1e9;
+      }
+    }
+  } else if (num > 0 && priceSol > 0) {
+    if (side === "buy") estimatedTokens = Math.floor(num / priceSol);
+    else estimatedSol = num * priceSol;
+  }
 
   const displayTicker = token.ticker;
   const projectIcon = token.imageUrl?.trim() || null;
 
-  const applyOmnipairQuickPercent = (pct: number) => {
-    if (!omnipairPoolSnapshot) return;
+  const applyQuickPercent = (pct: number) => {
     if (side === "buy") {
-      const maxSol = omnipairMaxBuySolUi(solBalanceLamports);
+      const maxSol =
+        omnipairPoolSnapshot != null
+          ? omnipairMaxBuySolUi(solBalanceLamports)
+          : Math.max(0, Number(solBalanceLamports) / 1e9 - 0.01);
       const sol = (maxSol * pct) / 100;
       setAmount(formatSwapAmountInput(sol, 9));
     } else {
       const raw = BigInt(tokenBalanceRaw || "0");
       const slice = (raw * BigInt(pct)) / BigInt(100);
       const ui = Number(slice) / 10 ** tokenDecimals;
-      setAmount(
-        formatSwapAmountInput(ui, Math.min(8, tokenDecimals))
-      );
+      setAmount(formatSwapAmountInput(ui, Math.min(8, tokenDecimals)));
     }
   };
 
@@ -710,29 +762,58 @@ function SwapPanel({
             })
           );
         }
-        if (side === "sell") {
-          console.info("[omnipair:swap] SELL: swap completed — persist + events dispatched", {
-            signature,
-          });
-          void refreshBalances().then(() => {
-            console.info(
-              "[omnipair:swap] SELL: post-success balances refresh completed"
-            );
-          });
-          console.info(
-            "[omnipair:swap] SELL: post-success balances refresh scheduled"
+        void refreshBalances();
+        console.info("[omnipair:swap] done", { signature, side });
+      } else if (program && walletAdapter.publicKey) {
+        const fill = await sendBondingSwapTx({
+          program,
+          mint: token.mint,
+          user: walletAdapter.publicKey,
+          side,
+          amountUi: num,
+          tokenAmountRaw:
+            side === "sell"
+              ? String(Math.floor(num * 10 ** Math.min(6, tokenDecimals)))
+              : undefined,
+        });
+        toast.success(
+          `${side === "buy" ? "Bought" : "Sold"} ${token.ticker}`
+        );
+        void persistLaunchpadTrade({
+          mint: token.mint,
+          signature: fill.signature,
+          side: fill.side,
+          sol_amount_raw: fill.sol_amount_raw,
+          token_amount_raw: fill.token_amount_raw,
+          timestamp: fill.timestamp,
+          wallet: walletAdapter.publicKey.toBase58(),
+          price_sol: fill.price_sol,
+          source: "bonding",
+        });
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("higher:trade-complete", {
+              detail: {
+                mint: token.mint,
+                timestamp: fill.timestamp,
+                price_sol: fill.price_sol,
+                sol_amount_raw: fill.sol_amount_raw,
+                token_amount_raw: fill.token_amount_raw,
+                source: "bonding" as const,
+              },
+            })
           );
         }
-        console.info("[omnipair:swap] done", { signature, side });
+        void refreshBalances();
       } else {
-        await new Promise(r => setTimeout(r, 1200));
-        toast.success(`${side === "buy" ? "Bought" : "Sold"} ${token.ticker}`);
+        toast.error("Connect your wallet to trade");
+        return;
       }
       setAmount("");
     } catch (e) {
-      console.error("[omnipair:swap] failed", e);
+      console.error("[swap] failed", e);
       if (isLikelyBenignWalletOrRpcNoise(e)) {
-        console.warn("[omnipair:swap] benign-looking RPC/wallet noise — check balances / explorer", e);
+        console.warn("[swap] benign-looking RPC/wallet noise — check balances / explorer", e);
         toast(
           "Swap may have completed; if balances changed, refresh the page. (RPC/wallet message was ignored.)",
           { icon: "ℹ️", duration: 5000 }
@@ -749,7 +830,7 @@ function SwapPanel({
   const spendableSol =
     omnipairPoolSnapshot != null
       ? omnipairMaxBuySolUi(solBalanceLamports)
-      : Number(solBalanceLamports) / 1e9;
+      : Math.max(0, Number(solBalanceLamports) / 1e9 - 0.01);
   const tokenBalUi = Number(tokenBalanceRaw || "0") / 10 ** tokenDecimals;
   const sellToken = side === "buy" ? "SOL" : displayTicker;
   const receiveToken = side === "buy" ? displayTicker : "SOL";
@@ -761,8 +842,8 @@ function SwapPanel({
   const receiveEstimate =
     num > 0
       ? side === "buy"
-        ? `~${estimated.toLocaleString()}`
-        : `~${estimated.toFixed(4)}`
+        ? `~${estimatedTokens.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+        : `~${estimatedSol.toFixed(4)}`
       : "0";
   const rateLabel =
     priceSol > 0
@@ -793,10 +874,7 @@ function SwapPanel({
               <button
                 type="button"
                 disabled={loading || (omnipairPoolSnapshot != null && walletBalLoading)}
-                onClick={() => {
-                  if (omnipairPoolSnapshot) applyOmnipairQuickPercent(100);
-                  else setAmount("100");
-                }}
+                onClick={() => applyQuickPercent(100)}
                 className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-semibold text-white/55 hover:text-white disabled:opacity-40"
               >
                 Max
@@ -820,10 +898,7 @@ function SwapPanel({
                 key={pct}
                 type="button"
                 disabled={loading || (omnipairPoolSnapshot != null && walletBalLoading)}
-                onClick={() => {
-                  if (omnipairPoolSnapshot) applyOmnipairQuickPercent(pct);
-                  else setAmount(String(pct));
-                }}
+                onClick={() => applyQuickPercent(pct)}
                 className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/75 disabled:pointer-events-none disabled:opacity-40"
               >
                 {pct}%
@@ -854,7 +929,7 @@ function SwapPanel({
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-[11px] font-medium text-white/45">You receive</span>
             <span className="text-[10px] text-white/30">
-              {omnipairPoolSnapshot ? "Omnipair spot" : "Estimate"}
+              {omnipairPoolSnapshot ? "Omnipair spot" : "Bonding curve"}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -871,11 +946,17 @@ function SwapPanel({
 
       <div className="space-y-0 px-0.5 py-0.5">
         <TalesTradeDetailsRow label="Rate" value={rateLabel} />
-        <TalesTradeDetailsRow label="Pool fee" value="0.30%" />
-        <TalesTradeDetailsRow
-          label="Platform fee"
-          value={PLATFORM_FEE_PCT_LABEL}
-        />
+        {omnipairPoolSnapshot ? (
+          <>
+            <TalesTradeDetailsRow label="Pool fee" value="0.30%" />
+            <TalesTradeDetailsRow
+              label="Platform fee"
+              value={PLATFORM_FEE_PCT_LABEL}
+            />
+          </>
+        ) : (
+          <TalesTradeDetailsRow label="Curve fee" value="1.00%" />
+        )}
         <div className="flex items-center justify-between gap-3 py-1">
           <span className="text-[11px] text-white/40">Max slippage</span>
           <SlippageButton value={slippage} onChange={setSlippage} />
@@ -886,19 +967,13 @@ function SwapPanel({
         <button
           type="button"
           onClick={handleTrade}
-          disabled={
-            loading ||
-            !amount ||
-            (omnipairPoolSnapshot != null && walletBalLoading)
-          }
+          disabled={loading || !amount || walletBalLoading}
           aria-busy={loading}
           className="w-full rounded-xl bg-[#ff5a1f] py-3 text-sm font-semibold text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
         >
-          {loading && omnipairPoolSnapshot
+          {loading
             ? "Swapping…"
-            : loading
-              ? "Processing…"
-              : `Swap ${sellToken} → ${receiveToken}`}
+            : `Swap ${sellToken} → ${receiveToken}`}
         </button>
       ) : (
         <WalletMultiButton />
