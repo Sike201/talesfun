@@ -552,30 +552,30 @@ export default function TokenPositionsList({
                 </span>
               ) : null}
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
+                className="rounded-lg bg-white px-3.5 py-1.5 text-[11px] font-semibold text-black hover:brightness-95 disabled:opacity-40"
                 onClick={() => void onClose(p)}
               >
-                {busy ? "Closing…" : "Close"}
+                {busy ? "Closing…" : "Market close"}
               </button>
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
+                className="rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-white/45 hover:bg-white/[0.06] hover:text-white/75 disabled:opacity-40"
                 onClick={() => void onRepay(p)}
               >
-                Repay
+                Repay only
               </button>
               <button
                 type="button"
                 disabled={busy || !omnipairPoolSnapshot}
-                className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-white/80 hover:bg-white/[0.1] disabled:opacity-40"
+                className="rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-white/45 hover:bg-white/[0.06] hover:text-white/75 disabled:opacity-40"
                 onClick={() => void onWithdraw(p)}
               >
-                Withdraw collateral
+                Withdraw only
               </button>
             </div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -749,7 +749,7 @@ export default function TokenPositionsList({
               <span className="text-[12px] tabular-nums text-white/35">
                 {openCount}
               </span>
-              <FieldHint text="Open leverage longs/shorts and SOL borrows against this token. Close, repay, or withdraw from the expanded row." />
+              <FieldHint text="Open leverage longs/shorts from the Leverage tab. Market close unwinds debt + collateral in one flow; repay/withdraw are advanced." />
             </div>
             <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12px]">
               <span className="text-[20px] font-semibold tabular-nums text-white">

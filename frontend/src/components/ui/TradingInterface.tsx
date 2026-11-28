@@ -14,6 +14,7 @@ import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
 import { sendOmnipairAddLiquidityTx } from "@/lib/omnipairLiquidity";
 import {
   sendOmnipairBorrowAgainstProjectTx,
+  sendOmnipairClosePositionTx,
   sendOmnipairLeverageStepTx,
 } from "@/lib/omnipairLending";
 import { useWalletBalances } from "@/hooks/useWalletBalances";
@@ -34,6 +35,7 @@ import {
   poolSafeCf,
 } from "@/lib/poolMaxLeverage";
 import {
+  dismissOpenPosition,
   listOpenPositions,
   markPositionValueUsd,
   upsertOpenPosition,
@@ -989,6 +991,12 @@ function SwapPanel({
 
 /* ─── Leverage ───────────────────────────────────────────────────── */
 
+function formatLevSizeInput(n: number): string {
+  if (!(n > 0) || !Number.isFinite(n)) return "";
+  if (n >= 1000) return String(Math.floor(n));
+  return String(Number(n.toPrecision(6)));
+}
+
 function LeveragePanel({
   token,
   connected,
@@ -1006,12 +1014,16 @@ function LeveragePanel({
   const [direction, setDirection] = useState<"long" | "short">(
     initialDirection ?? "long"
   );
+  /** Position size (notional) in margin units × leverage — Hyperliquid-style primary input. */
   const [size, setSize] = useState("");
-  /** When true, margin field tracks Max as leverage changes. */
+  /** When true, size field tracks Max as leverage changes. */
   const maxPinnedRef = useRef(false);
   const [loading, setLoading] = useState(false);
+  /** Open = size a new/add trade; Close = market-close the open position. */
+  const [orderAction, setOrderAction] = useState<"open" | "close">("open");
   /** Last opened long/short — leverage stays fixed; mark moves position value only. */
   const [openPos, setOpenPos] = useState<{
+    id: string;
     direction: "long" | "short";
     leverage: number;
     marginUi: number;
@@ -1029,7 +1041,7 @@ function LeveragePanel({
     : 0;
   const maxLev = poolMaxLeverage(reserveSol);
   const [leverage, setLeverage] = useState(() =>
-    clampLeverage(Math.min(1.5, maxLev), maxLev)
+    clampLeverage(Math.min(2, maxLev), maxLev)
   );
 
   const sizeNum = parseFloat(size) || 0;
@@ -1040,10 +1052,13 @@ function LeveragePanel({
   const usd = solUsd ?? 140;
   const currentPriceUSD = spot * usd;
   const lockedLev = clampLeverage(leverage, maxLev);
+  /** Collateral posted = size / leverage (perps mental model). */
+  const marginRequired =
+    sizeNum > 0 && lockedLev > 0 ? sizeNum / lockedLev : 0;
   const previewPosValueUsd =
     direction === "long"
-      ? sizeNum * lockedLev * currentPriceUSD
-      : sizeNum * lockedLev * usd;
+      ? sizeNum * currentPriceUSD
+      : sizeNum * usd;
   const liqPrice =
     direction === "long"
       ? currentPriceUSD * (1 - 1 / Math.max(lockedLev, 1.05) + 0.05)
@@ -1052,6 +1067,7 @@ function LeveragePanel({
   const openMark = openPos
     ? markPositionValueUsd(openPos, spot)
     : { entryUsd: 0, markUsd: 0 };
+  const openPnl = openMark.markUsd - openMark.entryUsd;
 
   // Raw balances only — never parse locale strings ("194,659" → 194).
   const walletSol = solBalanceLamports / 1e9;
@@ -1074,71 +1090,100 @@ function LeveragePanel({
     walletSol,
   });
   const maxMargin = marginCap.maxMargin;
+  const maxSize = maxMargin > 0 ? maxMargin * lockedLev : 0;
   const isOneX = marginCap.borrowFraction < 1e-8;
+  const marginUnit = direction === "short" ? "SOL" : token.ticker;
+  const hasOpen = openPos != null;
 
   const displayTicker = token.ticker;
 
-  // Keep selection inside pool max when depth / CF changes.
-  useEffect(() => {
-    setLeverage(prev => clampLeverage(prev, maxLev));
-  }, [maxLev]);
-
-  // When Max is pinned (or size exceeds new Max), keep the field on the levered Max.
-  useEffect(() => {
-    if (!Number.isFinite(maxMargin) || !(maxMargin > 0)) return;
-    const n = parseFloat(size);
-    const next =
-      maxMargin >= 1000
-        ? String(Math.floor(maxMargin))
-        : String(Number(maxMargin.toPrecision(6)));
-    if (maxPinnedRef.current || (n > 0 && n > maxMargin + 1e-12)) {
-      if (size !== next) setSize(next);
+  const syncOpenFromStorage = () => {
+    if (!walletAdapter.publicKey) {
+      setOpenPos(null);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync when caps / lev move
-  }, [maxMargin, direction, lockedLev]);
-
-  useEffect(() => {
-    if (!walletAdapter.publicKey) return;
     const mine = listOpenPositions(token.mint).find(
-      p => p.wallet === walletAdapter.publicKey!.toBase58()
+      p =>
+        p.wallet === walletAdapter.publicKey!.toBase58() &&
+        (p.kind ?? "trade") === "trade"
     );
     if (mine) {
       setOpenPos({
+        id: mine.id,
         direction: mine.direction,
         leverage: mine.leverage,
         marginUi: mine.marginUi,
         entrySpotSol: mine.entrySpotSol,
         entrySolUsd: mine.entrySolUsd,
       });
+      setDirection(mine.direction);
+    } else {
+      setOpenPos(null);
+      setOrderAction("open");
     }
+  };
+
+  // Keep selection inside pool max when depth / CF changes.
+  useEffect(() => {
+    setLeverage(prev => clampLeverage(prev, maxLev));
+  }, [maxLev]);
+
+  // When Max is pinned (or size exceeds new Max), keep the field on levered Max size.
+  useEffect(() => {
+    if (!Number.isFinite(maxSize) || !(maxSize > 0)) return;
+    const n = parseFloat(size);
+    const next = formatLevSizeInput(maxSize);
+    if (maxPinnedRef.current || (n > 0 && n > maxSize + 1e-12)) {
+      if (size !== next) setSize(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync when caps / lev move
+  }, [maxSize, direction, lockedLev]);
+
+  useEffect(() => {
+    syncOpenFromStorage();
+    const onChange = () => syncOpenFromStorage();
+    window.addEventListener("higher:positions-changed", onChange);
+    window.addEventListener("higher:trade-complete", onChange);
+    return () => {
+      window.removeEventListener("higher:positions-changed", onChange);
+      window.removeEventListener("higher:trade-complete", onChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token.mint, walletAdapter.publicKey]);
+
+  const anchorWallet = (): AnchorWallet | null => {
+    if (!walletAdapter.publicKey || !walletAdapter.signTransaction) return null;
+    return {
+      publicKey: walletAdapter.publicKey,
+      signTransaction: walletAdapter.signTransaction.bind(walletAdapter),
+      signAllTransactions: walletAdapter.signAllTransactions!.bind(walletAdapter),
+    } as AnchorWallet;
+  };
 
   const handleOpen = async () => {
     if (!connected || !size || !omnipairPoolSnapshot) {
       toast.error("Connect wallet and wait for the Omnipair pool");
       return;
     }
-    let margin = parseFloat(size);
-    if (!(margin > 0)) {
-      toast.error("Enter margin size");
+    if (!(sizeNum > 0) || !(marginRequired > 0)) {
+      toast.error("Enter a position size");
       return;
     }
-    if (Number.isFinite(maxMargin) && margin > maxMargin) {
+    if (Number.isFinite(maxSize) && sizeNum > maxSize + 1e-9) {
       toast.error(
-        `Max margin for this pool is ${maxMargin.toPrecision(4)} ${
-          direction === "short" ? "SOL" : displayTicker
-        }`
+        `Max size for this pool is ${maxSize.toPrecision(4)} ${marginUnit}`
       );
+      return;
+    }
+    const wallet = anchorWallet();
+    if (!wallet) {
+      toast.error("Connect a signing wallet");
       return;
     }
     setLoading(true);
     try {
-      const wallet = {
-        publicKey: walletAdapter.publicKey!,
-        signTransaction: walletAdapter.signTransaction!.bind(walletAdapter),
-        signAllTransactions: walletAdapter.signAllTransactions!.bind(walletAdapter),
-      } as AnchorWallet;
       const levUsed = clampLeverage(leverage, maxLev);
+      const margin = marginRequired;
       const { sigs } = await sendOmnipairLeverageStepTx({
         connection,
         wallet,
@@ -1148,31 +1193,33 @@ function LeveragePanel({
         leverage: levUsed,
         slippagePercent: 8,
       });
+      const primarySig = sigs[sigs.length - 1] || sigs[0];
+      const row = upsertOpenPosition({
+        mint: token.mint,
+        wallet: wallet.publicKey.toBase58(),
+        kind: "trade",
+        direction,
+        leverage: levUsed,
+        marginUi: margin,
+        entrySpotSol: spot,
+        entrySolUsd: usd,
+        signature: primarySig || "",
+      });
       setOpenPos({
+        id: row.id,
         direction,
         leverage: levUsed,
         marginUi: margin,
         entrySpotSol: spot,
         entrySolUsd: usd,
       });
-      const primarySig = sigs[sigs.length - 1] || sigs[0];
-      if (walletAdapter.publicKey) {
-        upsertOpenPosition({
-          mint: token.mint,
-          wallet: walletAdapter.publicKey.toBase58(),
-          kind: "trade",
-          direction,
-          leverage: levUsed,
-          marginUi: margin,
-          entrySpotSol: spot,
-          entrySolUsd: usd,
-          signature: primarySig || "",
-        });
-      }
+      setOrderAction("close");
+      setSize("");
+      maxPinnedRef.current = false;
       toast.success(
-        `${direction === "long" ? "Long" : "Short"} ${levUsed.toFixed(1)}x opened — leverage locked`
+        `${direction === "long" ? "Long" : "Short"} ${levUsed.toFixed(1)}x opened`
       );
-      if (primarySig && walletAdapter.publicKey) {
+      if (primarySig) {
         const solRaw =
           direction === "short"
             ? BigInt(Math.floor(margin * 1e9)).toString()
@@ -1188,7 +1235,7 @@ function LeveragePanel({
           sol_amount_raw: solRaw,
           token_amount_raw: tokRaw,
           timestamp: new Date().toISOString(),
-          wallet: walletAdapter.publicKey.toBase58(),
+          wallet: wallet.publicKey.toBase58(),
           price_sol: spot,
           source: "omnipair",
         });
@@ -1212,13 +1259,62 @@ function LeveragePanel({
     }
   };
 
+  const handleClose = async () => {
+    if (!openPos || !omnipairPoolSnapshot) {
+      toast.error("No open position to close");
+      return;
+    }
+    const wallet = anchorWallet();
+    if (!wallet) {
+      toast.error("Connect a signing wallet");
+      return;
+    }
+    setLoading(true);
+    try {
+      const { sigs } = await sendOmnipairClosePositionTx({
+        connection,
+        wallet,
+        snapshot: omnipairPoolSnapshot,
+        direction: openPos.direction,
+      });
+      dismissOpenPosition(openPos.id);
+      setOpenPos(null);
+      setOrderAction("open");
+      toast.success(
+        `Closed ${openPos.direction === "long" ? "long" : "short"}${
+          sigs.length > 1 ? ` (${sigs.length} txs)` : ""
+        }`
+      );
+      window.dispatchEvent(
+        new CustomEvent("higher:trade-complete", {
+          detail: {
+            mint: token.mint,
+            source: "omnipair-leverage-close",
+            side: openPos.direction,
+          },
+        })
+      );
+    } catch (e) {
+      if (!isLikelyBenignWalletOrRpcNoise(e)) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const projectIcon = token.imageUrl?.trim() || null;
-  const marginChip =
+  const sizeChip =
     direction === "long" ? (
       <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
     ) : (
       <SwapTokenChip symbol="SOL" iconUrl={SOL_TOKEN_ICON} />
     );
+
+  const availableLabel =
+    direction === "long"
+      ? `${walletTokens > 0 ? formatNumberCompact(walletTokens) : "0"} ${displayTicker}`
+      : `${walletSol > 0 ? walletSol.toFixed(3) : "0"} SOL`;
 
   return (
     <div className="space-y-2.5">
@@ -1230,19 +1326,32 @@ function LeveragePanel({
         ]}
         value={direction}
         onChange={d => {
+          if (hasOpen && openPos && d !== openPos.direction) {
+            toast("Close your open position before flipping side");
+            return;
+          }
           maxPinnedRef.current = false;
           setDirection(d);
         }}
       />
 
+      {hasOpen ? (
+        <TalesSegmentToggle
+          tone="neutral"
+          options={[
+            { id: "open" as const, label: "Open" },
+            { id: "close" as const, label: "Close" },
+          ]}
+          value={orderAction}
+          onChange={setOrderAction}
+        />
+      ) : null}
+
       {openPos ? (
         <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <SwapTokenChip
-                symbol={displayTicker}
-                iconUrl={projectIcon}
-              />
+            <div className="flex min-w-0 items-center gap-2">
+              <SwapTokenChip symbol={displayTicker} iconUrl={projectIcon} />
               <span
                 className={cn(
                   "text-[12px] font-semibold",
@@ -1257,118 +1366,176 @@ function LeveragePanel({
             </div>
             <button
               type="button"
-              className="text-[11px] text-white/35 hover:text-white/65"
-              onClick={() => setOpenPos(null)}
+              disabled={loading || !omnipairPoolSnapshot}
+              onClick={() => void handleClose()}
+              className="rounded-lg bg-white/[0.08] px-2.5 py-1 text-[11px] font-semibold text-white/80 transition-colors hover:bg-white/[0.14] hover:text-white disabled:opacity-40"
             >
-              Hide
+              {loading && orderAction === "close" ? "Closing…" : "Market close"}
             </button>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="mt-3 grid grid-cols-3 gap-2">
             <div>
               <p className="text-[10px] text-white/35">Value</p>
-              <p
-                className={cn(
-                  "text-[14px] font-semibold tabular-nums",
-                  openMark.markUsd < openMark.entryUsd
-                    ? "text-red-400"
-                    : "text-white"
-                )}
-              >
+              <p className="text-[13px] font-semibold tabular-nums text-white">
                 {formatUSD(openMark.markUsd)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[10px] text-white/35">Margin</p>
+              <p className="text-[13px] font-semibold tabular-nums text-white/80">
+                {formatNumberCompact(openPos.marginUi)}{" "}
+                <span className="text-[10px] font-medium text-white/40">
+                  {openPos.direction === "short" ? "SOL" : displayTicker}
+                </span>
               </p>
             </div>
             <div className="text-right">
               <p className="text-[10px] text-white/35">PnL</p>
               <p
                 className={cn(
-                  "text-[14px] font-semibold tabular-nums",
-                  openMark.markUsd - openMark.entryUsd >= 0
-                    ? "text-emerald-400"
-                    : "text-red-400"
+                  "text-[13px] font-semibold tabular-nums",
+                  openPnl >= 0 ? "text-emerald-400" : "text-red-400"
                 )}
               >
-                {openMark.markUsd - openMark.entryUsd >= 0 ? "+" : ""}
-                {formatUSD(openMark.markUsd - openMark.entryUsd)}
+                {openPnl >= 0 ? "+" : ""}
+                {formatUSD(openPnl)}
               </p>
             </div>
           </div>
         </div>
       ) : null}
 
-      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium text-white/45">Margin</span>
-          {Number.isFinite(maxMargin) && maxMargin > 0 ? (
-            <button
-              type="button"
-              className="text-[10px] font-semibold tabular-nums text-white/50 hover:text-white"
-              onClick={() => {
-                maxPinnedRef.current = true;
-                setSize(
-                  maxMargin >= 1000
-                    ? String(Math.floor(maxMargin))
-                    : String(Number(maxMargin.toPrecision(6)))
-                );
-              }}
+      {orderAction === "open" ? (
+        <>
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-white/45">
+                Size
+                <FieldHint
+                  text={
+                    direction === "long"
+                      ? `Position size in ${displayTicker}. Collateral posted = size ÷ leverage.`
+                      : "Position size in SOL. Collateral posted = size ÷ leverage."
+                  }
+                />
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] tabular-nums text-white/35">
+                  Avail {availableLabel}
+                </span>
+                {Number.isFinite(maxSize) && maxSize > 0 ? (
+                  <button
+                    type="button"
+                    className="text-[10px] font-semibold tabular-nums text-white/50 hover:text-white"
+                    onClick={() => {
+                      maxPinnedRef.current = true;
+                      setSize(formatLevSizeInput(maxSize));
+                    }}
+                  >
+                    Max
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={size}
+                onChange={e => {
+                  maxPinnedRef.current = false;
+                  setSize(e.target.value);
+                }}
+                placeholder="0"
+                className="min-w-0 flex-1 bg-transparent text-[22px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
+              />
+              {sizeChip}
+            </div>
+            <div className="mt-1.5 flex gap-1">
+              {([25, 50, 75, 100] as const).map(pct => (
+                <button
+                  key={pct}
+                  type="button"
+                  disabled={!(maxSize > 0)}
+                  onClick={() => {
+                    maxPinnedRef.current = pct === 100;
+                    setSize(formatLevSizeInput((maxSize * pct) / 100));
+                  }}
+                  className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/75 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {pct}%
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <LeverageRangeControl
+            value={lockedLev}
+            maxLev={maxLev}
+            depthSol={reserveSol}
+            onChange={v => setLeverage(clampLeverage(v, maxLev))}
+          />
+
+          <div className="space-y-0 px-0.5">
+            <TalesTradeDetailsRow
+              label={
+                <LabelWithHint
+                  hint={`Collateral locked to open this size. Longs post ${displayTicker}; shorts post SOL.`}
+                >
+                  Margin required
+                </LabelWithHint>
+              }
+              value={
+                marginRequired > 0
+                  ? `${formatNumberCompact(marginRequired)} ${marginUnit}`
+                  : "—"
+              }
+            />
+            <TalesTradeDetailsRow
+              label="Position value"
+              value={sizeNum > 0 ? formatUSD(previewPosValueUsd) : "—"}
+            />
+            <TalesTradeDetailsRow
+              label={
+                <LabelWithHint hint="Estimated mark price where this position can be liquidated. Moves with pool liquidity and your LTV.">
+                  Est. liquidation
+                </LabelWithHint>
+              }
+              value={sizeNum > 0 ? formatTokenPriceUsd(liqPrice) : "—"}
+            />
+            {!isOneX ? (
+              <TalesTradeDetailsRow
+                label={
+                  <LabelWithHint hint="Highest leverage this pool’s current depth safely supports (Omnipair dynamic CF).">
+                    Max leverage
+                  </LabelWithHint>
+                }
+                value={`${maxLev.toFixed(1)}x`}
+              />
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-4 text-center">
+          <p className="text-[13px] font-medium text-white/80">
+            Market close {openPos?.direction === "long" ? "long" : "short"}
+          </p>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-white/40">
+            Repays debt, unwinds the swap, and returns collateral in one flow —
+            same as closing on Hyperliquid / Phoenix.
+          </p>
+          {openPos ? (
+            <p
+              className={cn(
+                "mt-3 text-[15px] font-semibold tabular-nums",
+                openPnl >= 0 ? "text-emerald-400" : "text-red-400"
+              )}
             >
-              Max{" "}
-              {maxMargin >= 1000
-                ? Math.floor(maxMargin).toLocaleString()
-                : Number(maxMargin.toPrecision(4))}
-            </button>
+              {openPnl >= 0 ? "+" : ""}
+              {formatUSD(openPnl)} PnL
+            </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="number"
-            value={size}
-            onChange={e => {
-              maxPinnedRef.current = false;
-              setSize(e.target.value);
-            }}
-            placeholder="0"
-            className="min-w-0 flex-1 bg-transparent text-[22px] font-semibold tracking-tight text-white placeholder:text-white/20 focus:outline-none"
-          />
-          {marginChip}
-        </div>
-        <p className="mt-1 text-[10px] text-white/35">
-          {direction === "long"
-            ? `Balance ${walletTokens > 0 ? formatNumberCompact(walletTokens) : "0"} ${displayTicker}`
-            : `Balance ${walletSol > 0 ? walletSol.toFixed(3) : "0"} SOL`}
-        </p>
-      </div>
-
-      <LeverageRangeControl
-        value={lockedLev}
-        maxLev={maxLev}
-        depthSol={reserveSol}
-        onChange={v => setLeverage(clampLeverage(v, maxLev))}
-      />
-
-      <div className="space-y-0 px-0.5">
-        <TalesTradeDetailsRow
-          label={
-            <LabelWithHint hint="Estimated mark price where this position can be liquidated. Moves with pool liquidity and your LTV.">
-              Est. liquidation
-            </LabelWithHint>
-          }
-          value={sizeNum > 0 ? formatTokenPriceUsd(liqPrice) : "—"}
-        />
-        <TalesTradeDetailsRow
-          label="Position value"
-          value={sizeNum > 0 ? formatUSD(previewPosValueUsd) : "—"}
-        />
-        {!isOneX ? (
-          <TalesTradeDetailsRow
-            label={
-              <LabelWithHint hint="Highest leverage this pool’s current depth safely supports (Omnipair dynamic CF).">
-                Max leverage
-              </LabelWithHint>
-            }
-            value={`${maxLev.toFixed(1)}x`}
-          />
-        ) : null}
-      </div>
+      )}
 
       {!omnipairPoolSnapshot ? (
         <p className="px-0.5 text-[11px] text-amber-200/70">
@@ -1377,21 +1544,34 @@ function LeveragePanel({
       ) : null}
 
       {connected ? (
-        <button
-          type="button"
-          onClick={handleOpen}
-          disabled={loading || !size || !omnipairPoolSnapshot}
-          className={cn(
-            "w-full rounded-xl py-3 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
-            direction === "long"
-              ? "bg-emerald-500 text-[#04140a] hover:brightness-105"
-              : "bg-red-500 text-white hover:brightness-105"
-          )}
-        >
-          {loading
-            ? "Opening…"
-            : `${direction === "long" ? "Long" : "Short"} ${displayTicker}`}
-        </button>
+        orderAction === "close" && hasOpen ? (
+          <button
+            type="button"
+            onClick={() => void handleClose()}
+            disabled={loading || !omnipairPoolSnapshot}
+            className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black transition-[filter] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {loading
+              ? "Closing…"
+              : `Close ${openPos?.direction === "long" ? "Long" : "Short"}`}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handleOpen()}
+            disabled={loading || !size || !omnipairPoolSnapshot}
+            className={cn(
+              "w-full rounded-xl py-3 text-sm font-semibold transition-[filter] disabled:cursor-not-allowed disabled:opacity-45",
+              direction === "long"
+                ? "bg-emerald-500 text-[#04140a] hover:brightness-105"
+                : "bg-red-500 text-white hover:brightness-105"
+            )}
+          >
+            {loading
+              ? "Opening…"
+              : `Open ${lockedLev.toFixed(1)}x ${direction === "long" ? "Long" : "Short"}`}
+          </button>
+        )
       ) : (
         <WalletMultiButton />
       )}
