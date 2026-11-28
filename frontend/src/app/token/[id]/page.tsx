@@ -40,7 +40,7 @@ import TokenCandlestickChart from "@/components/ui/TokenCandlestickChart";
 import TradingInterface from "@/components/ui/TradingInterface";
 import TokenGraduatedFeed from "@/components/token/TokenGraduatedFeed";
 import TokenGraduatedInfo from "@/components/token/TokenGraduatedInfo";
-import { Token, Trade } from "@/types";
+import { FIXED_SUPPLY, Token, Trade } from "@/types";
 import {
   ExternalLink, Copy, CheckCircle2, ArrowUpRight
 } from "lucide-react";
@@ -51,8 +51,10 @@ import { logBondingPanelDebug } from "@/lib/bondingCurveQuote";
 import {
   bondingLiquidityUsd,
   graduatedLiquidityUsd,
+  isThinLiquidity,
   marketCapUsdFromSpot,
 } from "@/lib/marketStats";
+import { FieldHint } from "@/components/ui/FieldHint";
 import { readLocalTradeHistory } from "@/lib/recentActivityLocal";
 
 /** Row shape from Supabase / GET /api/tokens/[mint]/trades */
@@ -215,6 +217,10 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   walletLogRef.current = connectedWallet?.toBase58() ?? null;
   const [token, setToken] = useState<Token | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
+  /** Live SPL mint supply (UI units) after graduation burns — preferred over token_state.total_supply. */
+  const [mintSupplyUi, setMintSupplyUi] = useState<number | null>(null);
+  const mintSupplyUiRef = useRef<number | null>(null);
+  mintSupplyUiRef.current = mintSupplyUi;
   /** Summed lamports in last 24h for this mint (from Supabase). */
   const [volume24hLamportsStr, setVolume24hLamportsStr] = useState("0");
   const [postTradeSyncing, setPostTradeSyncing] = useState(false);
@@ -263,9 +269,11 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
 
     async function load() {
       setMetadataPending(false);
+      setMintSupplyUi(null);
       if (isDemoMarketMint(id) || id === DEMO_TOKEN.id) {
         if (!cancelled) {
           setToken(DEMO_TOKEN);
+          setMintSupplyUi(DEMO_TOKEN.totalSupply);
           setMetadataPending(false);
           setTrades([]);
           setVolume24hLamportsStr("120000000000");
@@ -299,7 +307,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           setTrades(mergeApiAndLocalTrades([], canonicalMint));
         }
 
-        const [sbRes, tradesRes, volRes, solUsdJson] = await Promise.all([
+        const [sbRes, tradesRes, volRes, solUsdJson, mintSupplyRes] = await Promise.all([
           timed(
             "supabase_token_row",
             fetch(`/api/tokens/${encodeURIComponent(canonicalMint)}`).then(
@@ -338,6 +346,12 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
             ).then(r => r.json())
           ),
           timed("sol_usd", fetch("/api/sol-usd").then(r => r.json())),
+          timed(
+            "mint_supply",
+            connection
+              .getTokenSupply(new PublicKey(canonicalMint))
+              .catch(() => null)
+          ),
         ]);
 
         if (cancelled) return;
@@ -351,6 +365,21 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         }
 
         let next = tokenStateToToken(stateRes, canonicalMint, { solUsd: su });
+        const supplyUi =
+          mintSupplyRes &&
+          typeof mintSupplyRes.value?.uiAmount === "number" &&
+          mintSupplyRes.value.uiAmount > 0
+            ? mintSupplyRes.value.uiAmount
+            : mintSupplyRes?.value?.amount && mintSupplyRes.value.decimals != null
+              ? Number(mintSupplyRes.value.amount) /
+                10 ** mintSupplyRes.value.decimals
+              : null;
+        if (supplyUi != null && Number.isFinite(supplyUi) && supplyUi > 0) {
+          next = { ...next, totalSupply: supplyUi };
+          if (!cancelled) setMintSupplyUi(supplyUi);
+        } else if (!cancelled) {
+          setMintSupplyUi(null);
+        }
         const sbRow =
           sbRes &&
           typeof sbRes === "object" &&
@@ -464,6 +493,41 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
       cancelled = true;
     };
   }, [id, connection]);
+
+  // Always refresh SPL mint supply — token_state.total_supply is NOT updated on burn.
+  useEffect(() => {
+    if (!validMintPk || isDemoMarketMint(id)) return;
+    let cancelled = false;
+
+    async function refreshMintSupply() {
+      try {
+        const supply = await connection.getTokenSupply(validMintPk!);
+        const ui =
+          supply.value.uiAmount != null && supply.value.uiAmount > 0
+            ? supply.value.uiAmount
+            : Number(supply.value.amount) / 10 ** supply.value.decimals;
+        if (cancelled || !(Number.isFinite(ui) && ui > 0)) return;
+        setMintSupplyUi(prev => (prev != null && Math.abs(prev - ui) < 1e-6 ? prev : ui));
+        setToken(prev => {
+          if (!prev || prev.mint !== validMintPk!.toBase58()) return prev;
+          if (prev.totalSupply === ui) return prev;
+          return applyTokenMarketCapUsd(
+            { ...prev, totalSupply: ui },
+            solUsdRef.current
+          );
+        });
+      } catch {
+        /* keep prior */
+      }
+    }
+
+    void refreshMintSupply();
+    const t = setInterval(refreshMintSupply, 20_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [id, connection, validMintPk]);
 
   useEffect(() => {
     if (!token?.mint) return;
@@ -587,6 +651,26 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
             if (cancelled) return;
             const su = solUsdRef.current;
             let next = tokenStateToToken(stateRes, canonicalMint, { solUsd: su });
+            const liveSupply = mintSupplyUiRef.current;
+            if (liveSupply != null && liveSupply > 0) {
+              next = { ...next, totalSupply: liveSupply };
+            } else {
+              try {
+                const supply = await connection.getTokenSupply(
+                  new PublicKey(canonicalMint)
+                );
+                const ui =
+                  supply.value.uiAmount != null && supply.value.uiAmount > 0
+                    ? supply.value.uiAmount
+                    : Number(supply.value.amount) / 10 ** supply.value.decimals;
+                if (Number.isFinite(ui) && ui > 0) {
+                  next = { ...next, totalSupply: ui };
+                  if (!cancelled) setMintSupplyUi(ui);
+                }
+              } catch {
+                /* keep token_state supply */
+              }
+            }
             const sbRow =
               sbRes &&
               typeof sbRes === "object" &&
@@ -675,26 +759,48 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
     ? omnipairSnapshot!.spotPriceSol
     : token.currentPrice;
   const priceUSD = solUsd != null ? displayPriceSol * solUsd : null;
-  // Pump.fun-style: FDV = spot × supply × SOL/USD; liquidity = 2 × SOL side.
+  // Pump.fun-style: mcap = spot × **SPL mint supply** (post-burn) × SOL/USD.
+  // token_state.total_supply stays at FIXED_SUPPLY (1B) after graduation burns —
+  // never use that for graduated mcap or the ratio looks ~30× too high.
+  const stateSupplyLooksStale =
+    graduated &&
+    Number.isFinite(token.totalSupply) &&
+    token.totalSupply >= FIXED_SUPPLY * 0.99;
+  const displaySupplyUi =
+    mintSupplyUi != null && mintSupplyUi > 0
+      ? mintSupplyUi
+      : stateSupplyLooksStale
+        ? 0
+        : token.totalSupply;
   const displayMarketCapUsd =
-    solUsd != null && displayPriceSol > 0 && token.totalSupply > 0
+    solUsd != null && displayPriceSol > 0 && displaySupplyUi > 0
       ? marketCapUsdFromSpot({
           spotSol: displayPriceSol,
-          totalSupply: token.totalSupply,
+          totalSupply: displaySupplyUi,
           solUsd,
         })
-      : token.marketCap;
+      : 0;
+  const poolReserveSolUi =
+    omnipairSpotLive && omnipairSnapshot
+      ? Number(omnipairSnapshot.reserveSolRaw) /
+        10 ** omnipairSnapshot.solDecimals
+      : null;
+  const poolReserveTokenUi =
+    omnipairSpotLive && omnipairSnapshot
+      ? Number(omnipairSnapshot.reserveProjectRaw) /
+        10 ** omnipairSnapshot.projectTokenDecimals
+      : null;
   const displayLiqUsd =
     solUsd == null
       ? null
-      : omnipairSpotLive && omnipairSnapshot
+      : omnipairSpotLive && poolReserveSolUi != null
         ? graduatedLiquidityUsd({
-            reserveSol:
-              Number(omnipairSnapshot.reserveSolRaw) /
-              10 ** omnipairSnapshot.solDecimals,
+            reserveSol: poolReserveSolUi,
             solUsd,
           })
         : bondingLiquidityUsd({ solRaised: token.solRaised, solUsd });
+  const thinLiquidity =
+    displayLiqUsd != null && isThinLiquidity(displayMarketCapUsd, displayLiqUsd);
 
   const volume24hUsdLabel = volume24hUsdFormatted(volume24hLamportsStr, solUsd);
   const volume24hSol = lamportsStrToSol(volume24hLamportsStr);
@@ -823,7 +929,11 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         <div className="token-stat-strip">
           <div>
             <p className="token-stat-label">Market cap</p>
-            <p className="token-stat-value">{formatUSD(displayMarketCapUsd)}</p>
+            <p className="token-stat-value">
+              {displaySupplyUi > 0 && displayMarketCapUsd > 0
+                ? formatUSD(displayMarketCapUsd)
+                : "…"}
+            </p>
           </div>
           <div>
             <p className="token-stat-label">Price</p>
@@ -838,9 +948,24 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
             <p className="token-stat-value">{volume24hUsdLabel}</p>
           </div>
           <div>
-            <p className="token-stat-label">Liquidity</p>
-            <p className="token-stat-value">
+            <p className="token-stat-label inline-flex items-center gap-1">
+              Liquidity
+              {poolReserveSolUi != null && poolReserveTokenUi != null ? (
+                <FieldHint
+                  text={`${poolReserveSolUi.toFixed(2)} SOL + ${formatNumber(poolReserveTokenUi)} ${token.ticker} in pool`}
+                />
+              ) : null}
+            </p>
+            <p className="token-stat-value inline-flex flex-wrap items-baseline gap-2">
               {displayLiqUsd != null ? formatUSD(displayLiqUsd) : "—"}
+              {thinLiquidity ? (
+                <span
+                  className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300/90"
+                  title="Small pool: prices move a lot on small trades"
+                >
+                  Thin
+                </span>
+              ) : null}
             </p>
           </div>
           <div>
@@ -853,13 +978,18 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
 
         <div className="token-layout-main">
           <div>
-            <TokenCandlestickChart mint={token.mint} ticker={token.ticker} solUsd={solUsd} />
+            <TokenCandlestickChart
+              mint={token.mint}
+              ticker={token.ticker}
+              solUsd={solUsd}
+              livePriceSol={displayPriceSol > 0 ? displayPriceSol : null}
+              totalSupply={displaySupplyUi}
+            />
 
             <TokenGraduatedFeed
-              token={token}
+              token={{ ...token, totalSupply: displaySupplyUi }}
               trades={trades}
               solUsd={solUsd}
-              marketCapUsd={displayMarketCapUsd}
               holderCount={holderCount}
               holderLoading={holderLoading}
               omnipairPoolSnapshot={
@@ -957,11 +1087,26 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
                       });
                       toast.success(`Omnipair bootstrap submitted: ${sig.slice(0, 8)}…`);
                       const program = getReadOnlyProgram(connection);
-                      const [pda] = getTokenStatePDA(new PublicKey(token.mint));
-                      const stateRes = await (program.account as any).tokenState.fetch(pda);
+                      const mintPk = new PublicKey(token.mint);
+                      const [pda] = getTokenStatePDA(mintPk);
+                      const [stateRes, supplyRes] = await Promise.all([
+                        (program.account as any).tokenState.fetch(pda),
+                        connection.getTokenSupply(mintPk).catch(() => null),
+                      ]);
                       const su =
                         typeof solUsd === "number" && solUsd > 0 ? solUsd : undefined;
-                      const next = tokenStateToToken(stateRes, token.mint, { solUsd: su });
+                      let next = tokenStateToToken(stateRes, token.mint, { solUsd: su });
+                      const ui =
+                        supplyRes?.value?.uiAmount != null && supplyRes.value.uiAmount > 0
+                          ? supplyRes.value.uiAmount
+                          : supplyRes?.value?.amount != null
+                            ? Number(supplyRes.value.amount) /
+                              10 ** supplyRes.value.decimals
+                            : null;
+                      if (ui != null && Number.isFinite(ui) && ui > 0) {
+                        next = { ...next, totalSupply: ui };
+                        setMintSupplyUi(ui);
+                      }
                       setToken(applyTokenMarketCapUsd(next, solUsd));
                       void requestTokenPhaseSync(token.mint);
                     } catch (e) {
@@ -1093,7 +1238,19 @@ function BondingPhasePage({
 
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-5">
-            <TokenCandlestickChart mint={token.mint} ticker={token.ticker} solUsd={solUsd} />
+            <TokenCandlestickChart
+              mint={token.mint}
+              ticker={token.ticker}
+              solUsd={solUsd}
+              livePriceSol={
+                token.currentPrice > 0 ? token.currentPrice : null
+              }
+              totalSupply={
+                Number.isFinite(token.totalSupply) && token.totalSupply > 0
+                  ? token.totalSupply
+                  : null
+              }
+            />
             <div className="op-surface rounded-xl p-6">
               <h2 className="mb-4 text-sm font-semibold text-white">About</h2>
               {metadataPending &&

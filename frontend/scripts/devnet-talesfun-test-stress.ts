@@ -394,8 +394,12 @@ async function launchAndGraduate(
           : "bonding";
     log(`  -> raised ${(Number(raised) / 1e9).toFixed(4)} phase=${phase}`);
 
-    // Occasional bonding sell (~30%) while still bonding, for two-sided activity.
-    if (phase === "bonding" && balAfter > 100_000 && Math.random() < 0.35) {
+    // Occasional bonding sell while still bonding (buy-biased by default for demo fills).
+    const sellP = Math.min(
+      0.9,
+      Math.max(0, Number(process.env.BOND_SELL_P ?? "0.2"))
+    );
+    if (phase === "bonding" && balAfter > 100_000 && Math.random() < sellP) {
       try {
         const sellFrac = 0.08 + Math.random() * 0.12;
         const sellUi = balAfter * sellFrac;
@@ -449,9 +453,13 @@ async function launchAndGraduate(
     }
 
     if (phase !== "bonding") break;
-    if (buyRound > 40) throw new Error("too many bonding buys");
+    if (buyRound > 80) throw new Error("too many bonding buys");
     // Space bonding fills so early candles aren't a single burst.
-    await sleep(8_000 + Math.floor(Math.random() * 12_000));
+    const sleepBase = Math.max(
+      500,
+      Number(process.env.BOND_SLEEP_MS ?? "3000")
+    );
+    await sleep(sleepBase + Math.floor(Math.random() * sleepBase));
   }
 
   log("bootstrapping Omnipair…");

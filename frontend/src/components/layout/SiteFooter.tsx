@@ -46,7 +46,12 @@ export default function SiteFooter() {
             graduated market.
           </p>
           <p className="mt-5 text-[11px] text-white/28">
-            © {new Date().getFullYear()} Tales · powered by Omnipair
+            © {new Date().getFullYear()} Tales
+            {(process.env.NEXT_PUBLIC_NETWORK || "devnet").toLowerCase() ===
+            "devnet"
+              ? " · (devnet)"
+              : ""}{" "}
+            · powered by Omnipair
           </p>
         </div>
         <nav className="flex flex-wrap gap-x-5 gap-y-2 text-[13px] font-medium">

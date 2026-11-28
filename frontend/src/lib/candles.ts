@@ -165,6 +165,69 @@ function volumeSolFromAmountRaw(raw: string | null | undefined): number {
 }
 
 /**
+ * Pin the chart's latest bucket to a live mid (Omnipair / curve spot) so a quiet
+ * pool never shows a stale last-trade price in the headline / line tip.
+ */
+export function mergeLiveSpotIntoCandles(
+  candles: CandleOHLC[],
+  spotSol: number,
+  interval: CandleInterval,
+  nowMs: number = Date.now()
+): CandleOHLC[] {
+  if (!Number.isFinite(spotSol) || spotSol <= 0) return candles;
+  if (!Number.isFinite(nowMs)) return candles;
+
+  const ms = CANDLE_INTERVAL_MS[interval];
+  const bucketStartMs = Math.floor(nowMs / ms) * ms;
+  const timeSec = Math.floor(bucketStartMs / 1000);
+  const next = candles.slice();
+  const last = next[next.length - 1];
+
+  if (!last) {
+    next.push({
+      time: timeSec,
+      open: spotSol,
+      high: spotSol,
+      low: spotSol,
+      close: spotSol,
+      volume_sol: 0,
+    });
+    return next;
+  }
+
+  if (timeSec < last.time) {
+    // Live clock behind last candle — still update close of last bar.
+    next[next.length - 1] = {
+      ...last,
+      high: Math.max(last.high, spotSol),
+      low: Math.min(last.low, spotSol),
+      close: spotSol,
+    };
+    return next;
+  }
+
+  if (timeSec === last.time) {
+    next[next.length - 1] = {
+      ...last,
+      high: Math.max(last.high, spotSol),
+      low: Math.min(last.low, spotSol),
+      close: spotSol,
+    };
+    return next;
+  }
+
+  next.push({
+    time: timeSec,
+    open: last.close,
+    high: Math.max(last.close, spotSol),
+    low: Math.min(last.close, spotSol),
+    close: spotSol,
+    volume_sol: 0,
+  });
+  return next;
+}
+
+/**
  * Merge one trade into the last candle (same UTC bucket) or append a new candle.
  * Prices are SOL/token. Returns a new array; if the trade falls in a bucket before the last candle, returns `candles` unchanged (caller should refetch).
  */

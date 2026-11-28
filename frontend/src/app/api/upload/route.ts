@@ -1,4 +1,9 @@
 import { NextRequest } from "next/server";
+import {
+  IMAGE_TYPE_ERROR,
+  MAX_COMPRESSED_IMAGE_BYTES,
+  isAllowedTokenImageType,
+} from "@/lib/imageUploadLimits";
 
 const PINATA_JWT = process.env.PINATA_JWT;
 const PINATA_GATEWAY = "https://gateway.pinata.cloud/ipfs";
@@ -35,6 +40,21 @@ export async function POST(request: NextRequest) {
     let imageUri = "";
 
     if (hasImage) {
+      if (image.size > MAX_COMPRESSED_IMAGE_BYTES) {
+        return Response.json(
+          {
+            error: `Image must be ≤ ${Math.round(MAX_COMPRESSED_IMAGE_BYTES / 1024)}KB after compression`,
+            details: `Received ${image.size} bytes`,
+          },
+          { status: 413 }
+        );
+      }
+      if (!isAllowedTokenImageType(image.type)) {
+        return Response.json(
+          { error: IMAGE_TYPE_ERROR },
+          { status: 400 }
+        );
+      }
       // Pinata expects multipart field name "file" with a filename for many clients
       const imageFormData = new FormData();
       const filename =

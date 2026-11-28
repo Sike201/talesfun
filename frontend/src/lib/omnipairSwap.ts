@@ -748,10 +748,11 @@ export async function sendOmnipairSwapTx(
     const feeCap = minAmountOut / BigInt(2);
     if (feeLamports > feeCap) feeLamports = feeCap;
     if (treasury && feeLamports > BigInt(0) && !treasury.equals(owner)) {
+      // Fee wallet may be a PDA / off-curve treasury — allowOwnerOffCurve required.
       const treasuryWsol = getAssociatedTokenAddressSync(
         NATIVE_MINT,
         treasury,
-        false,
+        true,
         TOKEN_PROGRAM_ID
       );
       ixs.push(

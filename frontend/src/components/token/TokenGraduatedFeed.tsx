@@ -17,7 +17,6 @@ type Props = {
   token: Token;
   trades: Trade[];
   solUsd: number | null;
-  marketCapUsd: number;
   holderCount: number | null;
   holderLoading: boolean;
   omnipairPoolSnapshot?: OmnipairPoolSnapshot | null;
@@ -29,7 +28,6 @@ export default function TokenGraduatedFeed({
   token,
   trades,
   solUsd,
-  marketCapUsd,
   holderCount,
   holderLoading,
   omnipairPoolSnapshot = null,
@@ -143,8 +141,6 @@ export default function TokenGraduatedFeed({
             ticker={token.ticker}
             trades={trades}
             solUsd={solUsd}
-            marketCapUsd={marketCapUsd}
-            totalSupply={token.totalSupply}
           />
         ) : section === "positions" ? (
           <TokenPositionsList

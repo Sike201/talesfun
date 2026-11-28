@@ -15,6 +15,7 @@ import {
 import {
   CANDLE_INTERVALS_UI,
   formatBondingChartPrice,
+  mergeLiveSpotIntoCandles,
   mergeTradeIntoCandles,
   type CandleInterval,
   type CandleOHLC,
@@ -22,11 +23,11 @@ import {
 } from "@/lib/candles";
 import { formatUsdPumpChart } from "@/lib/chartUsdPriceFormat";
 import { formatChartAxisTickLocal, formatChartCrosshairLocal } from "@/lib/chartTimeLocal";
-import { cn } from "@/lib/utils";
+import { cn, formatUSD } from "@/lib/utils";
 import DotGrid from "./DotGrid";
 
 type CandleApiRow = CandlestickData & { volume_sol?: number };
-type ChartVisual = "line" | "candles";
+type ChartMetric = "price" | "mcap";
 
 type CandlesResponse = {
   candles: CandleApiRow[];
@@ -51,21 +52,30 @@ function applyIntervalToChart(chart: IChartApi, interval: CandleInterval) {
   });
 }
 
+function formatChartMcap(usd: number): string {
+  return formatUSD(usd);
+}
+
 export default function TokenCandlestickChart({
   mint,
   ticker,
   solUsd,
+  livePriceSol = null,
+  totalSupply = null,
 }: {
   mint: string;
   ticker?: string;
   solUsd?: number | null;
+  /** Live curve / Omnipair mid (SOL per token) — pins chart tip + headline to current spot. */
+  livePriceSol?: number | null;
+  /** Current circulating / mint supply (UI units) for market-cap mode. */
+  totalSupply?: number | null;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const areaRef = useRef<ISeriesApi<"Area"> | null>(null);
   const intervalRef = useRef<CandleInterval>("5m");
-  const visualRef = useRef<ChartVisual>("line");
+  const metricRef = useRef<ChartMetric>("price");
   const skipNextIntervalFetchRef = useRef(false);
   const loadRef = useRef<(mode: "manual" | "auto", opts?: { silent?: boolean }) => Promise<void>>(
     async () => {}
@@ -76,9 +86,10 @@ export default function TokenCandlestickChart({
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const usdModeRef = useRef(false);
   const solUsdRateRef = useRef(1);
+  const supplyRef = useRef(0);
 
   const [interval, setInterval] = useState<CandleInterval>("5m");
-  const [visual, setVisual] = useState<ChartVisual>("line");
+  const [metric, setMetric] = useState<ChartMetric>("price");
   const [autoActive, setAutoActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,61 +97,71 @@ export default function TokenCandlestickChart({
   const [changePct, setChangePct] = useState<number | null>(null);
 
   intervalRef.current = interval;
-  visualRef.current = visual;
+  metricRef.current = metric;
 
   const sym = (ticker?.trim() ?? "").length > 0 ? ticker!.trim() : "—";
   const usdMode = solUsd != null && Number.isFinite(solUsd) && solUsd > 0;
   const solUsdRate = usdMode ? solUsd! : 1;
+  const supply =
+    totalSupply != null && Number.isFinite(totalSupply) && totalSupply > 0
+      ? totalSupply
+      : 0;
+  const mcapAvailable = supply > 0 && usdMode;
 
   usdModeRef.current = usdMode;
   solUsdRateRef.current = solUsdRate;
+  supplyRef.current = supply;
   autoActiveRef.current = autoActive;
 
-  const applyVisualSeries = useCallback((chart: IChartApi, mode: ChartVisual) => {
-    if (candleRef.current) {
-      chart.removeSeries(candleRef.current);
-      candleRef.current = null;
-    }
+  // If mcap isn't available yet, keep price selected.
+  useEffect(() => {
+    if (!mcapAvailable && metric === "mcap") setMetric("price");
+  }, [mcapAvailable, metric]);
+
+  const scalePoint = useCallback(
+    (solPerToken: number, metricMode: ChartMetric, rate: number, supplyUi: number) => {
+      if (!(Number.isFinite(solPerToken) && solPerToken > 0)) return solPerToken;
+      if (metricMode === "mcap" && supplyUi > 0 && rate > 0) {
+        return solPerToken * supplyUi * rate;
+      }
+      return rate > 0 && usdModeRef.current ? solPerToken * rate : solPerToken;
+    },
+    []
+  );
+
+  const applyAreaSeries = useCallback((chart: IChartApi, metricMode: ChartMetric) => {
     if (areaRef.current) {
       chart.removeSeries(areaRef.current);
       areaRef.current = null;
     }
 
-    const priceFormatter = usdModeRef.current ? formatUsdPumpChart : formatBondingChartPrice;
-    const priceFormat = {
-      type: "custom" as const,
-      minMove: 1e-15,
-      formatter: (p: number) => priceFormatter(p),
-    };
+    const priceFormatter =
+      metricMode === "mcap"
+        ? formatChartMcap
+        : usdModeRef.current
+          ? formatUsdPumpChart
+          : formatBondingChartPrice;
 
-    if (mode === "candles") {
-      candleRef.current = chart.addCandlestickSeries({
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#16a34a",
-        borderDownColor: "#dc2626",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
-        priceFormat,
-      });
-    } else {
-      areaRef.current = chart.addAreaSeries({
-        lineColor: "#22c55e",
-        topColor: "rgba(34, 197, 94, 0.18)",
-        bottomColor: "rgba(34, 197, 94, 0)",
-        lineWidth: 3,
-        crosshairMarkerVisible: true,
-        crosshairMarkerRadius: 5,
-        crosshairMarkerBorderColor: "#22c55e",
-        crosshairMarkerBackgroundColor: "#0a0a0a",
-        priceLineVisible: true,
-        lastValueVisible: true,
-        priceFormat,
-      });
-    }
+    areaRef.current = chart.addAreaSeries({
+      lineColor: "#22c55e",
+      topColor: "rgba(34, 197, 94, 0.18)",
+      bottomColor: "rgba(34, 197, 94, 0)",
+      lineWidth: 3,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 5,
+      crosshairMarkerBorderColor: "#22c55e",
+      crosshairMarkerBackgroundColor: "#0a0a0a",
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceFormat: {
+        type: "custom",
+        minMove: 1e-15,
+        formatter: (p: number) => priceFormatter(p),
+      },
+    });
   }, []);
 
-  const pushCandlesToSeries = useCallback((usd: boolean, rate: number) => {
+  const pushCandlesToSeries = useCallback(() => {
     const raw = candlesSolRef.current.filter(
       c =>
         Number.isFinite(c.time) &&
@@ -152,51 +173,32 @@ export default function TokenCandlestickChart({
         c.close > 0
     );
     if (!raw.length) {
-      candleRef.current?.setData([]);
       areaRef.current?.setData([]);
       setLastClose(null);
       setChangePct(null);
       return;
     }
-    const scale = (v: number) => (Number.isFinite(v) ? v * rate : v);
+
+    const metricMode = metricRef.current;
+    const rate = solUsdRateRef.current;
+    const supplyUi = supplyRef.current;
     const first = raw[0]!;
     const last = raw[raw.length - 1]!;
-    const lastScaled = usd ? scale(last.close) : last.close;
-    const firstScaled = usd ? scale(first.close) : first.close;
+    const lastScaled = scalePoint(last.close, metricMode, rate, supplyUi);
+    const firstScaled = scalePoint(first.close, metricMode, rate, supplyUi);
     setLastClose(lastScaled);
     if (firstScaled > 0) {
       setChangePct(((lastScaled - firstScaled) / firstScaled) * 100);
     }
 
-    if (visualRef.current === "candles" && candleRef.current) {
-      candleRef.current.setData(
-        raw.map(({ time, open, high, low, close }) => {
-          const o = usd ? scale(open) : open;
-          const c = usd ? scale(close) : close;
-          let h = usd ? scale(high) : high;
-          let l = usd ? scale(low) : low;
-          // Keep OHLC consistent so lightweight-charts doesn't drop bars.
-          h = Math.max(h, o, c);
-          l = Math.min(l, o, c);
-          if (!(l > 0)) l = Math.min(o, c);
-          return {
-            time: time as UTCTimestamp,
-            open: o,
-            high: h,
-            low: l,
-            close: c,
-          };
-        })
-      );
-    } else if (areaRef.current) {
-      areaRef.current.setData(
-        raw.map(({ time, close }) => ({
-          time: time as UTCTimestamp,
-          value: usd ? scale(close) : close,
-        }))
-      );
-    }
-  }, []);
+    if (!areaRef.current) return;
+    areaRef.current.setData(
+      raw.map(({ time, close }) => ({
+        time: time as UTCTimestamp,
+        value: scalePoint(close, metricMode, rate, supplyUi),
+      }))
+    );
+  }, [scalePoint]);
 
   const load = useCallback(
     async (mode: "manual" | "auto", opts?: { silent?: boolean }) => {
@@ -235,7 +237,7 @@ export default function TokenCandlestickChart({
         applyIntervalToChart(chart, effectiveInterval);
 
         const raw = body.candles ?? [];
-        candlesSolRef.current = raw.map(c => ({
+        let mapped = raw.map(c => ({
           time: typeof c.time === "number" ? c.time : Number(c.time),
           open: c.open,
           high: c.high,
@@ -244,7 +246,15 @@ export default function TokenCandlestickChart({
           volume_sol: c.volume_sol ?? 0,
         }));
         effectiveIntervalRef.current = effectiveInterval;
-        pushCandlesToSeries(usdMode, solUsdRate);
+        if (livePriceSol != null && livePriceSol > 0) {
+          mapped = mergeLiveSpotIntoCandles(
+            mapped,
+            livePriceSol,
+            effectiveInterval
+          );
+        }
+        candlesSolRef.current = mapped;
+        pushCandlesToSeries();
         if (!silent) {
           chart.timeScale().fitContent();
         }
@@ -258,10 +268,22 @@ export default function TokenCandlestickChart({
         }
       }
     },
-    [mint, interval, usdMode, solUsdRate, pushCandlesToSeries]
+    [mint, interval, livePriceSol, pushCandlesToSeries]
   );
 
   loadRef.current = load;
+
+  // Keep chart tip + headline on the live mid (not a stale last-trade candle).
+  useEffect(() => {
+    if (!(livePriceSol != null && livePriceSol > 0)) return;
+    if (!chartRef.current) return;
+    candlesSolRef.current = mergeLiveSpotIntoCandles(
+      candlesSolRef.current,
+      livePriceSol,
+      effectiveIntervalRef.current
+    );
+    pushCandlesToSeries();
+  }, [livePriceSol, pushCandlesToSeries]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -315,7 +337,7 @@ export default function TokenCandlestickChart({
     });
 
     chartRef.current = chart;
-    applyVisualSeries(chart, visualRef.current);
+    applyAreaSeries(chart, metricRef.current);
     void loadRef.current("manual");
 
     const ro = new ResizeObserver(() => {
@@ -328,18 +350,22 @@ export default function TokenCandlestickChart({
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
-      candleRef.current = null;
       areaRef.current = null;
     };
-  }, [mint, applyVisualSeries]);
+  }, [mint, applyAreaSeries]);
 
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    applyVisualSeries(chart, visual);
-    pushCandlesToSeries(usdMode, solUsdRate);
+    applyAreaSeries(chart, metric);
+    pushCandlesToSeries();
     chart.timeScale().fitContent();
-  }, [visual, applyVisualSeries, pushCandlesToSeries, usdMode, solUsdRate]);
+  }, [metric, applyAreaSeries, pushCandlesToSeries]);
+
+  // Supply / SOL-USD changes rescale the same SOL candles.
+  useEffect(() => {
+    pushCandlesToSeries();
+  }, [totalSupply, solUsd, usdMode, pushCandlesToSeries]);
 
   useEffect(() => {
     return () => {
@@ -354,7 +380,7 @@ export default function TokenCandlestickChart({
       return;
     }
     void loadRef.current("manual");
-  }, [mint, interval, solUsd, usdMode]);
+  }, [mint, interval]);
 
   useEffect(() => {
     const onTradeComplete = (e: Event) => {
@@ -388,25 +414,18 @@ export default function TokenCandlestickChart({
 
         candlesSolRef.current = merged;
         const last = merged[merged.length - 1]!;
-        const rate = solUsdRateRef.current;
-        const u = usdModeRef.current;
-        const scale = (v: number) => (Number.isFinite(v) ? v * rate : v);
+        const value = scalePoint(
+          last.close,
+          metricRef.current,
+          solUsdRateRef.current,
+          supplyRef.current
+        );
 
-        if (visualRef.current === "candles" && candleRef.current) {
-          candleRef.current.update({
-            time: last.time as UTCTimestamp,
-            open: u ? scale(last.open) : last.open,
-            high: u ? scale(last.high) : last.high,
-            low: u ? scale(last.low) : last.low,
-            close: u ? scale(last.close) : last.close,
-          });
-        } else if (areaRef.current) {
-          areaRef.current.update({
-            time: last.time as UTCTimestamp,
-            value: u ? scale(last.close) : last.close,
-          });
-        }
-        setLastClose(u ? scale(last.close) : last.close);
+        areaRef.current?.update({
+          time: last.time as UTCTimestamp,
+          value,
+        });
+        setLastClose(value);
 
         if (reconcileTimerRef.current) clearTimeout(reconcileTimerRef.current);
         reconcileTimerRef.current = setTimeout(() => {
@@ -420,13 +439,15 @@ export default function TokenCandlestickChart({
     };
     window.addEventListener("higher:trade-complete", onTradeComplete);
     return () => window.removeEventListener("higher:trade-complete", onTradeComplete);
-  }, [mint]);
+  }, [mint, scalePoint]);
 
-  const priceLabel =
+  const headline =
     lastClose != null
-      ? usdMode
-        ? formatUsdPumpChart(lastClose)
-        : formatBondingChartPrice(lastClose)
+      ? metric === "mcap"
+        ? formatChartMcap(lastClose)
+        : usdMode
+          ? formatUsdPumpChart(lastClose)
+          : formatBondingChartPrice(lastClose)
       : "—";
 
   const up = changePct == null || changePct >= 0;
@@ -436,11 +457,15 @@ export default function TokenCandlestickChart({
       <div className="relative z-[2] flex flex-col gap-3 px-1 pb-2 pt-1 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <p className="max-w-full truncate text-[11px] font-medium tracking-wide text-white/35">
-            {usdMode ? `${sym}/USD` : `${sym}/SOL`}
+            {metric === "mcap"
+              ? "Market cap"
+              : usdMode
+                ? `${sym}/USD`
+                : `${sym}/SOL`}
           </p>
           <div className="mt-1 flex flex-wrap items-baseline gap-2.5">
             <p className="text-[1.65rem] font-semibold tabular-nums tracking-tight text-white">
-              {priceLabel}
+              {headline}
             </p>
             {changePct != null ? (
               <span
@@ -458,17 +483,21 @@ export default function TokenCandlestickChart({
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex rounded-full bg-white/[0.05] p-0.5">
-            {(["line", "candles"] as const).map(v => (
+            {(["price", "mcap"] as const).map(v => (
               <button
                 key={v}
                 type="button"
-                onClick={() => setVisual(v)}
+                disabled={v === "mcap" && !mcapAvailable}
+                onClick={() => setMetric(v)}
                 className={cn(
-                  "rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize transition-all duration-200",
-                  visual === v ? "bg-white text-[#0a0a0a] shadow-sm" : "text-white/40 hover:text-white/70"
+                  "rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all duration-200",
+                  metric === v
+                    ? "bg-white text-[#0a0a0a] shadow-sm"
+                    : "text-white/40 hover:text-white/70",
+                  v === "mcap" && !mcapAvailable && "cursor-not-allowed opacity-40"
                 )}
               >
-                {v === "line" ? "Line" : "Candles"}
+                {v === "price" ? "Price" : "Market cap"}
               </button>
             ))}
           </div>

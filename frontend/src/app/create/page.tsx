@@ -29,6 +29,14 @@ import {
   getReadOnlyProgram,
 } from "@/lib/program";
 import CoinPreview from "@/components/landing/CoinPreview";
+import {
+  compressTokenImage,
+  IMAGE_FILE_ACCEPT,
+  IMAGE_TYPE_ERROR,
+  MAX_COMPRESSED_IMAGE_BYTES,
+  MAX_IMAGE_UPLOAD_BYTES,
+  isAllowedTokenImageType,
+} from "@/lib/compressImage";
 
 interface FormData {
   name: string;
@@ -176,15 +184,44 @@ export default function CreatePage() {
   const set = (key: keyof FormData, value: string) =>
     setForm(prev => ({ ...prev, [key]: value }));
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { toast.error("Image must be under 5MB"); return; }
-    const reader = new FileReader();
-    reader.onload = ev => {
-      setForm(prev => ({ ...prev, image: file, imagePreview: ev.target?.result as string }));
-    };
-    reader.readAsDataURL(file);
+
+    if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+      toast.error("Image must be under 3MB");
+      input.value = "";
+      return;
+    }
+    if (!isAllowedTokenImageType(file.type)) {
+      toast.error(IMAGE_TYPE_ERROR);
+      input.value = "";
+      return;
+    }
+
+    const toastId = toast.loading("Compressing image…");
+    try {
+      const compressed = await compressTokenImage(file);
+      const reader = new FileReader();
+      reader.onload = ev => {
+        setForm(prev => ({
+          ...prev,
+          image: compressed,
+          imagePreview: ev.target?.result as string,
+        }));
+        const kb = Math.round(compressed.size / 1024);
+        toast.success(`Image ready · ${kb}KB`, { id: toastId });
+      };
+      reader.onerror = () => {
+        toast.error("Could not preview image", { id: toastId });
+      };
+      reader.readAsDataURL(compressed);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Image compression failed";
+      toast.error(msg, { id: toastId });
+      input.value = "";
+    }
   };
 
   const validate = (): string | null => {
@@ -537,7 +574,8 @@ export default function CreatePage() {
                       Select image or drag and drop
                     </p>
                     <p className="mt-1 text-[11px] text-white/35">
-                      PNG, JPG, GIF · Max 5MB
+                      Still images (no GIF) · Max 3MB · compressed to ≤
+                      {Math.round(MAX_COMPRESSED_IMAGE_BYTES / 1024)}KB
                     </p>
                   </div>
                 )}
@@ -545,7 +583,7 @@ export default function CreatePage() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept={IMAGE_FILE_ACCEPT}
                 onChange={handleImageUpload}
                 className="hidden"
               />

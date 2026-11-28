@@ -49,9 +49,9 @@ pub const TOKEN_DECIMALS: u8 = 6;
 
 /// Net SOL into the curve (after creator fee) cumulated in `token_state.sol_raised` before graduation.
 /// Production: **85 SOL** — exhausts ~793.1M bonding tokens (Pump-like completion).
-/// Dev-only: enable Cargo feature `dev-graduation` for **0.5 SOL** (cheap E2E / infra tests only).
+/// Dev-only: enable Cargo feature `dev-graduation` for **5 SOL** (hackathon / demo E2E on scarce devnet SOL).
 #[cfg(feature = "dev-graduation")]
-pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 500_000_000;
+pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 5_000_000_000;
 #[cfg(not(feature = "dev-graduation"))]
 pub const GRADUATION_THRESHOLD_LAMPORTS: u64 = 85_000_000_000;
 

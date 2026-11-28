@@ -15,7 +15,7 @@ no-log-ix-name = []
 cpi = ["no-entrypoint"]
 default = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
-# 5 SOL graduation threshold for fast devnet/local testing only.
+# 5 SOL graduation threshold for hackathon / demo E2E on scarce devnet SOL.
 # Build: anchor build -- --features dev-graduation
 dev-graduation = []
 

@@ -2,7 +2,7 @@
 
 import { ArrowUpRight } from "lucide-react";
 import type { Trade, TradeActivityType } from "@/types";
-import { cn, formatNumber, formatUSD, shortenAddress } from "@/lib/utils";
+import { cn, formatNumber, shortenAddress } from "@/lib/utils";
 
 function formatActivityTime(d: Date): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -44,16 +44,12 @@ type Props = {
   ticker: string;
   trades: Trade[];
   solUsd: number | null;
-  marketCapUsd: number;
-  totalSupply?: number;
 };
 
 export default function TokenGraduatedActivity({
   ticker,
   trades,
   solUsd,
-  marketCapUsd,
-  totalSupply = 1_000_000_000,
 }: Props) {
   return (
     <div className="token-activity-table-wrap">
@@ -62,7 +58,6 @@ export default function TokenGraduatedActivity({
           <span>Action</span>
           <span>Value</span>
           <span>{ticker}</span>
-          <span>MCap</span>
           <span className="text-right">Trader</span>
         </div>
 
@@ -73,14 +68,6 @@ export default function TokenGraduatedActivity({
                 solUsd != null && solUsd > 0 && trade.solAmount > 0
                   ? trade.solAmount * solUsd
                   : null;
-              const rowMcapUsd =
-                trade.price > 0 && solUsd != null && solUsd > 0
-                  ? trade.price * totalSupply * solUsd
-                  : marketCapUsd;
-              const isLending =
-                trade.type === "long" ||
-                trade.type === "short" ||
-                trade.type === "borrow";
               return (
                 <div key={trade.id} className="token-activity-row sm:grid">
                   <span className="tabular-nums text-white/45">
@@ -114,9 +101,6 @@ export default function TokenGraduatedActivity({
                     ) : (
                       "—"
                     )}
-                  </span>
-                  <span className="tabular-nums text-white/50">
-                    {isLending ? "—" : formatUSD(rowMcapUsd)}
                   </span>
                   <span className="flex items-center justify-end gap-2">
                     <span

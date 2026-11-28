@@ -112,8 +112,16 @@ export default function Navbar() {
         <Link href="/" className="flex shrink-0 items-center gap-2.5 justify-self-start">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/tales-mark.png" alt="" className="h-6 w-6 rounded-[5px]" />
-          <span className="hidden text-[15px] font-semibold tracking-tight text-white sm:block">
-            Tales
+          <span className="hidden items-baseline gap-1.5 sm:flex">
+            <span className="text-[15px] font-semibold tracking-tight text-white">
+              Tales
+            </span>
+            {(process.env.NEXT_PUBLIC_NETWORK || "devnet").toLowerCase() ===
+            "devnet" ? (
+              <span className="text-[10px] font-medium tracking-[0.04em] text-white/28">
+                (devnet)
+              </span>
+            ) : null}
           </span>
         </Link>
 

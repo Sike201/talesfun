@@ -70,6 +70,12 @@ export default function TokensDirectory({ initialQuery = "" }: { initialQuery?: 
           <div className="max-w-xl">
             <h1 className="text-[1.75rem] font-semibold tracking-[-0.03em] text-white sm:text-[2rem]">
               Explore launches
+              {(process.env.NEXT_PUBLIC_NETWORK || "devnet").toLowerCase() ===
+              "devnet" ? (
+                <span className="ml-2 align-middle text-[12px] font-medium tracking-[0.02em] text-white/28 sm:text-[13px]">
+                  (devnet)
+                </span>
+              ) : null}
             </h1>
             <p className="mt-2 text-[14px] leading-relaxed text-white/40">
               Bonding curves that graduate into Omnipair. Long or short any graduated token.

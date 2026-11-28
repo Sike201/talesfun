@@ -1,9 +1,9 @@
 /**
- * Pump.fun / stonk.fun–style market stats.
+ * Pump.fun–style market stats.
  *
- * Market cap (FDV) = spot × total supply × SOL/USD
+ * Market cap = spot × **current mint supply** (post-burn) × SOL/USD
  * Liquidity (AMM TVL proxy) = 2 × SOL reserve × SOL/USD
- *   (balanced pool: token side ≈ SOL side, so 2× quote is the usual launchpad display)
+ *   (at mid, both sides are equal → 2× quote matches total reserve value)
  */
 
 export function marketCapUsdFromSpot(params: {
@@ -40,10 +40,16 @@ export function bondingLiquidityUsd(params: {
 }
 
 /**
- * How “thin” the book is vs FDV. Pump graduation is often ~4–8×;
- * thin Omnipair seeds can land 50–200× until depth grows.
+ * How “thin” the book is vs mcap. Pump graduation is often ~4–8×;
+ * thin Omnipair seeds can land much higher until depth grows.
  */
 export function mcapToLiquidityRatio(mcapUsd: number, liqUsd: number): number | null {
   if (!(mcapUsd > 0) || !(liqUsd > 0)) return null;
   return mcapUsd / liqUsd;
+}
+
+/** True when liquidity is under 1% of market cap (pump-style “thin pool” signal). */
+export function isThinLiquidity(mcapUsd: number, liqUsd: number): boolean {
+  if (!(mcapUsd > 0) || !(liqUsd > 0)) return false;
+  return liqUsd / mcapUsd < 0.01;
 }
