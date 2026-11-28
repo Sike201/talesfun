@@ -54,7 +54,6 @@ import {
   isThinLiquidity,
   marketCapUsdFromSpot,
 } from "@/lib/marketStats";
-import { FieldHint } from "@/components/ui/FieldHint";
 import { readLocalTradeHistory } from "@/lib/recentActivityLocal";
 
 /** Row shape from Supabase / GET /api/tokens/[mint]/trades */
@@ -785,11 +784,6 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
       ? Number(omnipairSnapshot.reserveSolRaw) /
         10 ** omnipairSnapshot.solDecimals
       : null;
-  const poolReserveTokenUi =
-    omnipairSpotLive && omnipairSnapshot
-      ? Number(omnipairSnapshot.reserveProjectRaw) /
-        10 ** omnipairSnapshot.projectTokenDecimals
-      : null;
   const displayLiqUsd =
     solUsd == null
       ? null
@@ -948,14 +942,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
             <p className="token-stat-value">{volume24hUsdLabel}</p>
           </div>
           <div>
-            <p className="token-stat-label inline-flex items-center gap-1">
-              Liquidity
-              {poolReserveSolUi != null && poolReserveTokenUi != null ? (
-                <FieldHint
-                  text={`${poolReserveSolUi.toFixed(2)} SOL + ${formatNumber(poolReserveTokenUi)} ${token.ticker} in pool`}
-                />
-              ) : null}
-            </p>
+            <p className="token-stat-label">Liquidity</p>
             <p className="token-stat-value inline-flex flex-wrap items-baseline gap-2">
               {displayLiqUsd != null ? formatUSD(displayLiqUsd) : "—"}
               {thinLiquidity ? (
@@ -1008,6 +995,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
               copied={copied}
               onCopyMint={copyMint}
               omnipairSnapshot={omnipairPoolLive ? omnipairSnapshot : null}
+              solUsd={solUsd}
               creatorFeesSol={token.creatorFeesEarned}
               showCreatorFees={Boolean(
                 connectedWallet &&

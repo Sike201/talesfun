@@ -104,6 +104,28 @@ export function timeAgo(date: Date): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** Longer relative age for pool / pair rows (e.g. `9mo 8d ago`). */
+export function formatPairAge(date: Date): string {
+  const ms = Date.now() - date.getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  const remDays = days - months * 30;
+  if (months < 12) {
+    return remDays > 0 ? `${months}mo ${remDays}d ago` : `${months}mo ago`;
+  }
+  const years = Math.floor(months / 12);
+  const remMonths = months - years * 12;
+  return remMonths > 0 ? `${years}y ${remMonths}mo ago` : `${years}y ago`;
+}
+
 /**
  * SOL per token from raw lamports and token base units (6 decimals).
  * Use instead of BN.toNumber() ratios so large trades never yield NaN/Infinity.
