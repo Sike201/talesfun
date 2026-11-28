@@ -121,13 +121,15 @@ async function main() {
   const payerBal =
     (await connection.getBalance(payer.publicKey)) / LAMPORTS_PER_SOL;
 
-  // Keep ~0.04 SOL on payer for close top-ups / fees.
-  const budget = Math.max(0, payerBal - 0.04);
+  // Keep a small fee buffer on payer; allow lean funding when faucet is dry.
+  const keep = Math.min(0.04, Math.max(0.004, payerBal * 0.08));
+  const budget = Math.max(0, payerBal - keep);
   const perTrader = Math.min(0.055, budget / TARGET_TRADERS);
-  if (perTrader < 0.028) {
+  const minPer = Number(process.env.MIN_PER_TRADER || "0.012") || 0.012;
+  if (perTrader < minPer) {
     throw new Error(
       `Need more SOL for ${TARGET_TRADERS} traders (have ${payerBal.toFixed(3)} SOL, ` +
-        `perTrader=${perTrader.toFixed(4)}). Fund payer ${payer.publicKey.toBase58()}`
+        `perTrader=${perTrader.toFixed(4)}, min=${minPer}). Fund payer ${payer.publicKey.toBase58()}`
     );
   }
 
