@@ -422,8 +422,8 @@ export default function TradingInterface({
     omnipairPoolSnapshot.spotPriceSol > 0;
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c0c0c]">
-      <div className="flex gap-1 border-b border-white/[0.06] p-2">
+    <div className="rounded-2xl border border-white/[0.08] bg-[#0c0c0c]">
+      <div className="flex gap-1 p-2">
         {tabs.map(t => (
           <button
             key={t.id}
