@@ -9,6 +9,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  type TransactionInstruction,
 } from "@solana/web3.js";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
 import {
@@ -312,7 +313,12 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
   collateralTokenUi: number;
   /** Optional override for SOL borrow UI; defaults to ~60% of collateral value */
   borrowSolUi?: number;
-}): Promise<{ collateralSig: string; borrowSig: string }> {
+}): Promise<{
+  /** Wallet signatures required (collateral + borrow; 2 today). */
+  sigs: string[];
+  collateralSig: string;
+  borrowSig: string;
+}> {
   const { connection, wallet, snapshot, collateralTokenUi } = params;
   const dec = snapshot.projectTokenDecimals;
   const collRaw = BigInt(Math.floor(collateralTokenUi * 10 ** dec));
@@ -330,14 +336,6 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
   let borrowRaw = BigInt(Math.floor(borrowSolUi * 1e9));
   if (borrowRaw <= BigInt(0)) throw new Error("Borrow amount too small");
 
-  const collateralSig = await sendOmnipairAddCollateralTx({
-    connection,
-    wallet,
-    snapshot,
-    collateralMint: snapshot.projectMint,
-    amountRaw: collRaw,
-  });
-
   const isBorrowPowerErr = (e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
     return (
@@ -349,6 +347,37 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
       msg.includes("6044")
     );
   };
+
+  const existing = await fetchOmnipairUserPosition({
+    connection,
+    wallet,
+    snapshot,
+  });
+  const projectIs0 = existing
+    ? existing.token0.equals(snapshot.projectMint)
+    : false;
+  const existingProjectColl = existing
+    ? projectIs0
+      ? existing.collateral0
+      : existing.collateral1
+    : BigInt(0);
+
+  const sigs: string[] = [];
+  let collateralSig = "";
+  if (existingProjectColl < collRaw) {
+    const addRaw =
+      existingProjectColl > BigInt(0)
+        ? collRaw - existingProjectColl
+        : collRaw;
+    collateralSig = await sendOmnipairAddCollateralTx({
+      connection,
+      wallet,
+      snapshot,
+      collateralMint: snapshot.projectMint,
+      amountRaw: addRaw,
+    });
+    sigs.push(collateralSig);
+  }
 
   let borrowSig = "";
   let lastErr: unknown;
@@ -362,6 +391,7 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
         borrowMint: NATIVE_MINT,
         amountRaw: borrowRaw,
       });
+      sigs.push(borrowSig);
       lastErr = undefined;
       break;
     } catch (e) {
@@ -379,7 +409,11 @@ export async function sendOmnipairBorrowAgainstProjectTx(params: {
       : new Error("BorrowingPowerExceeded after backoff");
   }
 
-  return { collateralSig, borrowSig };
+  return {
+    sigs,
+    collateralSig: collateralSig || "already-posted",
+    borrowSig,
+  };
 }
 
 /**
@@ -636,18 +670,16 @@ export async function fetchOmnipairUserPosition(params: {
   };
 }
 
-/**
- * Repay borrowed tokens. Pass `amountRaw = u64::MAX` (via repayAll) to clear the side.
- */
-export async function sendOmnipairRepayTx(params: {
+async function buildRepayIxs(params: {
   connection: Connection;
   wallet: AnchorWallet;
   snapshot: OmnipairPoolSnapshot;
   repayMint: PublicKey;
-  /** Raw token amount; omit / use repayAll for full repay */
   amountRaw?: bigint;
   repayAll?: boolean;
-}): Promise<string> {
+  /** Optional pre-fetched position (avoids extra RPC when bundling). */
+  pos?: OmnipairUserPositionView | null;
+}): Promise<TransactionInstruction[]> {
   const { connection, wallet, snapshot, repayMint } = params;
   const owner = wallet.publicKey;
   if (!owner) throw new Error("Wallet not connected");
@@ -673,7 +705,7 @@ export async function sendOmnipairRepayTx(params: {
     tokenProgram
   );
 
-  const ixs = [
+  const ixs: TransactionInstruction[] = [
     createAssociatedTokenAccountIdempotentInstruction(
       owner,
       userAta,
@@ -686,7 +718,10 @@ export async function sendOmnipairRepayTx(params: {
 
   // Ensure WSOL ATA has enough for repay-all (program checks ATA balance).
   if (repayMint.equals(NATIVE_MINT)) {
-    const pos = await fetchOmnipairUserPosition({ connection, wallet, snapshot });
+    const pos =
+      params.pos !== undefined
+        ? params.pos
+        : await fetchOmnipairUserPosition({ connection, wallet, snapshot });
     let need = params.repayAll
       ? pos
         ? repayMint.equals(pos.token0)
@@ -737,19 +772,17 @@ export async function sendOmnipairRepayTx(params: {
       createCloseAccountInstruction(userAta, owner, owner, [], TOKEN_PROGRAM_ID)
     );
   }
-
-  return sendTx(connection, wallet, ixs, "repay");
+  return ixs;
 }
 
-/** Withdraw collateral. `u64::MAX` only when debt is fully repaid. */
-export async function sendOmnipairRemoveCollateralTx(params: {
+async function buildRemoveCollateralIxs(params: {
   connection: Connection;
   wallet: AnchorWallet;
   snapshot: OmnipairPoolSnapshot;
   collateralMint: PublicKey;
   amountRaw?: bigint;
   removeAll?: boolean;
-}): Promise<string> {
+}): Promise<TransactionInstruction[]> {
   const { connection, wallet, snapshot, collateralMint } = params;
   const owner = wallet.publicKey;
   if (!owner) throw new Error("Wallet not connected");
@@ -777,7 +810,7 @@ export async function sendOmnipairRemoveCollateralTx(params: {
     tokenProgram
   );
 
-  const ixs = [
+  const ixs: TransactionInstruction[] = [
     createAssociatedTokenAccountIdempotentInstruction(
       owner,
       userAta,
@@ -814,14 +847,52 @@ export async function sendOmnipairRemoveCollateralTx(params: {
       createCloseAccountInstruction(userAta, owner, owner, [], TOKEN_PROGRAM_ID)
     );
   }
-
-  return sendTx(connection, wallet, ixs, "remove_collateral");
+  return ixs;
 }
 
 /**
- * Close like beta.omnipair.fi: cover debt (buy/sell if needed) → repay all → withdraw all collateral.
- * Long / borrow (project coll, SOL debt): sell tokens → repay SOL → remove project coll.
- * Short (SOL coll, project debt): buy tokens → repay project → remove SOL coll.
+ * Repay borrowed tokens. Pass `amountRaw = u64::MAX` (via repayAll) to clear the side.
+ */
+export async function sendOmnipairRepayTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  repayMint: PublicKey;
+  /** Raw token amount; omit / use repayAll for full repay */
+  amountRaw?: bigint;
+  repayAll?: boolean;
+}): Promise<string> {
+  const ixs = await buildRepayIxs(params);
+  return sendTx(params.connection, params.wallet, ixs, "repay");
+}
+
+/** Withdraw collateral. `u64::MAX` only when debt is fully repaid. */
+export async function sendOmnipairRemoveCollateralTx(params: {
+  connection: Connection;
+  wallet: AnchorWallet;
+  snapshot: OmnipairPoolSnapshot;
+  collateralMint: PublicKey;
+  amountRaw?: bigint;
+  removeAll?: boolean;
+}): Promise<string> {
+  const ixs = await buildRemoveCollateralIxs(params);
+  return sendTx(params.connection, params.wallet, ixs, "remove_collateral");
+}
+
+export type ClosePositionResult = {
+  /** On-chain signatures that required a wallet signature (ideally 1). */
+  sigs: string[];
+  /** True when the position PDA exists but has zero debt+collateral (stale UI). */
+  alreadyClosed?: boolean;
+};
+
+/**
+ * Close position: optional cover-swap, then **one** bundled repay + withdraw tx.
+ * Long / borrow (project coll, SOL debt): sell tokens if needed → repay SOL + remove project coll.
+ * Short (SOL coll, project debt): buy tokens if needed → repay project + remove SOL coll.
+ *
+ * Returns `alreadyClosed: true` (0 sigs) when there is nothing on-chain to unwind —
+ * callers must NOT treat that as a successful signed close.
  */
 export async function sendOmnipairClosePositionTx(params: {
   connection: Connection;
@@ -830,7 +901,7 @@ export async function sendOmnipairClosePositionTx(params: {
   /** Hint for which unwind path; inferred from on-chain debt if omitted */
   direction?: "long" | "short" | "borrow";
   slippagePercent?: number;
-}): Promise<{ sigs: string[] }> {
+}): Promise<ClosePositionResult> {
   const {
     connection,
     wallet,
@@ -841,9 +912,10 @@ export async function sendOmnipairClosePositionTx(params: {
   if (!owner) throw new Error("Wallet not connected");
 
   const pos = await fetchOmnipairUserPosition({ connection, wallet, snapshot });
-  if (!pos) throw new Error("No on-chain position to close");
+  if (!pos) {
+    return { sigs: [], alreadyClosed: true };
+  }
 
-  const sigs: string[] = [];
   const projectIs0 = pos.token0.equals(snapshot.projectMint);
   const debtSol = NATIVE_MINT.equals(pos.token0) ? pos.debt0Raw : pos.debt1Raw;
   const debtProject = projectIs0 ? pos.debt0Raw : pos.debt1Raw;
@@ -851,6 +923,14 @@ export async function sendOmnipairClosePositionTx(params: {
     ? pos.collateral0
     : pos.collateral1;
   const collProject = projectIs0 ? pos.collateral0 : pos.collateral1;
+  const hasDebt = debtSol > BigInt(0) || debtProject > BigInt(0);
+  const hasColl = collSol > BigInt(0) || collProject > BigInt(0);
+
+  if (!hasDebt && !hasColl) {
+    return { sigs: [], alreadyClosed: true };
+  }
+
+  const sigs: string[] = [];
 
   // Infer direction from debt side when not provided.
   const direction =
@@ -863,6 +943,7 @@ export async function sendOmnipairClosePositionTx(params: {
           ? "short"
           : "long");
 
+  // Optional pre-tx: acquire the asset needed to repay (only when wallet is short).
   if (direction === "short" && debtProject > BigInt(0)) {
     const needUi =
       (Number(debtProject) / 10 ** snapshot.projectTokenDecimals) * 1.02;
@@ -888,21 +969,10 @@ export async function sendOmnipairClosePositionTx(params: {
       });
       sigs.push(swap.signature);
     }
-    sigs.push(
-      await sendOmnipairRepayTx({
-        connection,
-        wallet,
-        snapshot,
-        repayMint: snapshot.projectMint,
-        repayAll: true,
-      })
-    );
   } else if (debtSol > BigInt(0)) {
-    // Long / borrow: may need to sell project tokens for SOL to repay.
     const needSol = (Number(debtSol) / 1e9) * 1.02;
     const solLamports = await connection.getBalance(owner, "confirmed");
     const haveSol = solLamports / 1e9;
-    // Keep ~0.02 SOL for fees.
     if (haveSol < needSol + 0.02) {
       const shortfall = needSol + 0.02 - haveSol;
       const sellUi =
@@ -954,51 +1024,79 @@ export async function sendOmnipairClosePositionTx(params: {
         }
       }
     }
-    sigs.push(
-      await sendOmnipairRepayTx({
+  }
+
+  // Bundle repay + withdraw into a single wallet confirmation.
+  const closeIxs: TransactionInstruction[] = [];
+  if (debtProject > BigInt(0)) {
+    closeIxs.push(
+      ...(await buildRepayIxs({
+        connection,
+        wallet,
+        snapshot,
+        repayMint: snapshot.projectMint,
+        repayAll: true,
+        pos,
+      }))
+    );
+  } else if (debtSol > BigInt(0)) {
+    closeIxs.push(
+      ...(await buildRepayIxs({
         connection,
         wallet,
         snapshot,
         repayMint: NATIVE_MINT,
         repayAll: true,
-      })
+        pos,
+      }))
     );
   }
 
-  // After debt cleared, withdraw all collateral sides that remain.
-  const refreshed = await fetchOmnipairUserPosition({
+  if (collProject > BigInt(0)) {
+    closeIxs.push(
+      ...(await buildRemoveCollateralIxs({
+        connection,
+        wallet,
+        snapshot,
+        collateralMint: snapshot.projectMint,
+        removeAll: true,
+      }))
+    );
+  }
+  if (collSol > BigInt(0)) {
+    closeIxs.push(
+      ...(await buildRemoveCollateralIxs({
+        connection,
+        wallet,
+        snapshot,
+        collateralMint: NATIVE_MINT,
+        removeAll: true,
+      }))
+    );
+  }
+
+  if (closeIxs.length === 0) {
+    if (sigs.length === 0) {
+      return { sigs: [], alreadyClosed: true };
+    }
+    return { sigs };
+  }
+
+  const closeSig = await sendTx(
     connection,
     wallet,
-    snapshot,
-  });
-  if (refreshed) {
-    const stillDebt =
-      refreshed.debt0Raw > BigInt(0) || refreshed.debt1Raw > BigInt(0);
-    if (stillDebt) {
-      throw new Error("Debt remains after repay — cannot withdraw collateral");
-    }
-    if (refreshed.collateral0 > BigInt(0)) {
-      sigs.push(
-        await sendOmnipairRemoveCollateralTx({
-          connection,
-          wallet,
-          snapshot,
-          collateralMint: refreshed.token0,
-          removeAll: true,
-        })
-      );
-    }
-    if (refreshed.collateral1 > BigInt(0)) {
-      sigs.push(
-        await sendOmnipairRemoveCollateralTx({
-          connection,
-          wallet,
-          snapshot,
-          collateralMint: refreshed.token1,
-          removeAll: true,
-        })
-      );
-    }
+    closeIxs,
+    "close_position_bundled"
+  );
+  sigs.push(closeSig);
+
+  // Verify debt is gone; if not, surface clearly (do not pretend success).
+  const after = await fetchOmnipairUserPosition({ connection, wallet, snapshot });
+  if (
+    after &&
+    (after.debt0Raw > BigInt(0) || after.debt1Raw > BigInt(0))
+  ) {
+    throw new Error("Debt remains after close — repay may have failed");
   }
 
   return { sigs };

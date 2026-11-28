@@ -1271,19 +1271,29 @@ function LeveragePanel({
     }
     setLoading(true);
     try {
-      const { sigs } = await sendOmnipairClosePositionTx({
+      const result = await sendOmnipairClosePositionTx({
         connection,
         wallet,
         snapshot: omnipairPoolSnapshot,
         direction: openPos.direction,
       });
+      if (result.alreadyClosed && result.sigs.length === 0) {
+        dismissOpenPosition(openPos.id);
+        setOpenPos(null);
+        setOrderAction("open");
+        toast("Already closed on-chain");
+        return;
+      }
+      if (result.sigs.length === 0) {
+        throw new Error("Close produced no transaction — nothing was signed");
+      }
       dismissOpenPosition(openPos.id);
       setOpenPos(null);
       setOrderAction("open");
       toast.success(
-        `Closed ${openPos.direction === "long" ? "long" : "short"}${
-          sigs.length > 1 ? ` (${sigs.length} txs)` : ""
-        }`
+        result.sigs.length === 1
+          ? `Closed ${openPos.direction === "long" ? "long" : "short"} (1 signature)`
+          : `Closed ${openPos.direction === "long" ? "long" : "short"} (${result.sigs.length} signatures)`
       );
       window.dispatchEvent(
         new CustomEvent("higher:trade-complete", {

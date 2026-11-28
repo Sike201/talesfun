@@ -394,15 +394,29 @@ export default function TokenPositionsList({
     }
     setBusyId(p.id);
     try {
-      const { sigs } = await sendOmnipairClosePositionTx({
+      const result = await sendOmnipairClosePositionTx({
         connection,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         wallet: wallet as any,
         snapshot: omnipairPoolSnapshot,
         direction: p.kind === "loan" ? "borrow" : p.direction,
       });
+      if (result.alreadyClosed && result.sigs.length === 0) {
+        // Stale local/UI row — nothing to sign on-chain.
+        dismissOpenPosition(p.id);
+        toast("Already closed on-chain — cleared from list");
+        await refresh();
+        return;
+      }
+      if (result.sigs.length === 0) {
+        throw new Error("Close produced no transaction — nothing was signed");
+      }
       dismissOpenPosition(p.id);
-      toast.success(`Closed (${sigs.length} tx)`);
+      toast.success(
+        result.sigs.length === 1
+          ? "Closed (1 signature)"
+          : `Closed (${result.sigs.length} signatures)`
+      );
       window.dispatchEvent(
         new CustomEvent("higher:trade-complete", {
           detail: { mint, source: "omnipair" },
