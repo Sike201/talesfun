@@ -7,7 +7,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { ArrowDownUp } from "lucide-react";
 import { Token } from "@/types";
 import { cn, formatUSD, formatSolPerTokenPrice, formatTokenPriceUsd } from "@/lib/utils";
-import { LabelWithHint } from "@/components/ui/FieldHint";
+import { FieldHint, LabelWithHint } from "@/components/ui/FieldHint";
 import toast from "react-hot-toast";
 import type { OmnipairPoolSnapshot } from "@/lib/omnipairPoolState";
 import { sendOmnipairSwapTx, omnipairMaxBuySolUi } from "@/lib/omnipairSwap";
@@ -945,18 +945,23 @@ function SwapPanel({
       </div>
 
       <div className="space-y-0 px-0.5 py-0.5">
-        <TalesTradeDetailsRow label="Rate" value={rateLabel} />
-        {omnipairPoolSnapshot ? (
-          <>
-            <TalesTradeDetailsRow label="Pool fee" value="0.30%" />
-            <TalesTradeDetailsRow
-              label="Platform fee"
-              value={PLATFORM_FEE_PCT_LABEL}
-            />
-          </>
-        ) : (
-          <TalesTradeDetailsRow label="Curve fee" value="1.00%" />
-        )}
+        <div className="flex items-center justify-between gap-3 py-1">
+          <span className="inline-flex items-center gap-1 text-[11px] text-white/40">
+            Rate
+            {omnipairPoolSnapshot ? (
+              <FieldHint
+                text={
+                  <>
+                    Pool fee 0.30% · Platform fee {PLATFORM_FEE_PCT_LABEL}
+                  </>
+                }
+              />
+            ) : (
+              <FieldHint text="Curve fee 1.00% — stays in the bonding vault as liquidity." />
+            )}
+          </span>
+          <span className="text-[11px] tabular-nums text-white/75">{rateLabel}</span>
+        </div>
         <div className="flex items-center justify-between gap-3 py-1">
           <span className="text-[11px] text-white/40">Max slippage</span>
           <SlippageButton value={slippage} onChange={setSlippage} />

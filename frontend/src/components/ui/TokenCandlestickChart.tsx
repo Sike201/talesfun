@@ -441,22 +441,30 @@ export default function TokenCandlestickChart({
     return () => window.removeEventListener("higher:trade-complete", onTradeComplete);
   }, [mint, scalePoint]);
 
+  // Prefer live spot for the headline so it matches the token stat strip
+  // (candle lastClose can lag until the next merge).
+  const headlineValue =
+    metric === "mcap" && !(supply > 0)
+      ? null
+      : livePriceSol != null && livePriceSol > 0
+        ? scalePoint(livePriceSol, metric, solUsdRate, supply)
+        : lastClose;
   const headline =
-    lastClose != null
+    headlineValue != null
       ? metric === "mcap"
-        ? formatChartMcap(lastClose)
+        ? formatChartMcap(headlineValue)
         : usdMode
-          ? formatUsdPumpChart(lastClose)
-          : formatBondingChartPrice(lastClose)
+          ? formatUsdPumpChart(headlineValue)
+          : formatBondingChartPrice(headlineValue)
       : "—";
 
   const up = changePct == null || changePct >= 0;
 
   return (
-    <div className="relative overflow-hidden rounded-2xl">
-      <div className="relative z-[2] flex flex-col gap-3 px-1 pb-2 pt-1 sm:flex-row sm:items-end sm:justify-between">
+    <div className="relative rounded-2xl">
+      <div className="relative z-[2] flex flex-col gap-3 px-1 pb-3 pt-2 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <p className="max-w-full truncate text-[11px] font-medium tracking-wide text-white/35">
+          <p className="text-[11px] font-medium leading-none tracking-wide text-white/35">
             {metric === "mcap"
               ? "Market cap"
               : usdMode
@@ -536,7 +544,7 @@ export default function TokenCandlestickChart({
         </div>
       </div>
 
-      <div className="relative w-full">
+      <div className="relative w-full overflow-hidden rounded-2xl">
         <DotGrid
           className="absolute inset-0 z-0 opacity-90"
           dot="rgba(255,255,255,0.11)"
