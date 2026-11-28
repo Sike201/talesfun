@@ -41,29 +41,13 @@ export async function GET(request: NextRequest) {
     sums.set(m, (sums.get(m) ?? BigInt(0)) + add);
   };
 
-  // Backfill bonding-curve fills into trades so 24h volume includes pre-graduation.
-  if (mintFilter) {
-    try {
-      const connection = getIndexerRpcConnection();
-      const bonding = await indexBondingTradesForMint(connection, mintFilter, {
-        limit: 100,
-        deadlineMs: Date.now() + 10_000,
-        persist: true,
-      });
-      console.info("[volume24h] bonding backfill", {
-        mint: mintFilter,
-        signaturesFetched: bonding.signaturesFetched,
-        tradesIndexed: bonding.tradesIndexed,
-      });
-    } catch (e) {
-      console.warn("[volume24h] bonding backfill failed", e);
-    }
-  }
-
+  // Prefer warm Supabase first so the token page can paint 24h volume quickly.
+  // Bonding backfill is only for cold mints (was blocking Activity ~10s via Promise.all).
   try {
+    // Keep select narrow — landing hits this for ALL mints and was selecting wide rows.
     let q = supabaseAdmin
       .from("trades")
-      .select("mint, sol_amount_raw, timestamp, side, signature")
+      .select("mint, sol_amount_raw, signature")
       .gte("timestamp", since)
       .in("side", ["buy", "sell"]);
     if (mintFilter) q = q.eq("mint", mintFilter);
@@ -83,6 +67,42 @@ export async function GET(request: NextRequest) {
     }
   } catch (e) {
     console.warn("[volume24h] Supabase unreachable", e);
+  }
+
+  const skipBonding = request.nextUrl.searchParams.get("skipBonding") === "1";
+  const warmEnough = mintFilter
+    ? (sums.get(mintFilter) ?? BigInt(0)) > BigInt(0)
+    : sums.size > 0;
+  if (mintFilter && !skipBonding && !warmEnough) {
+    try {
+      const connection = getIndexerRpcConnection();
+      const bonding = await indexBondingTradesForMint(connection, mintFilter, {
+        limit: 80,
+        deadlineMs: Date.now() + 4_000,
+        persist: true,
+      });
+      for (const t of bonding.trades) {
+        if (t.side === "buy" || t.side === "sell") {
+          const ts = Date.parse(t.timestamp);
+          if (Number.isFinite(ts) && ts >= sinceMs) {
+            addRow(t.mint, t.sol_amount_raw, t.signature);
+          }
+        }
+      }
+      console.info("[volume24h] bonding backfill", {
+        mint: mintFilter,
+        signaturesFetched: bonding.signaturesFetched,
+        tradesIndexed: bonding.tradesIndexed,
+      });
+    } catch (e) {
+      console.warn("[volume24h] bonding backfill failed", e);
+    }
+  } else if (mintFilter) {
+    console.info("[volume24h] skip bonding backfill", {
+      mint: mintFilter,
+      skipBonding,
+      warmEnough,
+    });
   }
 
   for (const t of listLocalTrades(mintFilter ?? undefined)) {

@@ -44,12 +44,14 @@ type Props = {
   ticker: string;
   trades: Trade[];
   solUsd: number | null;
+  loading?: boolean;
 };
 
 export default function TokenGraduatedActivity({
   ticker,
   trades,
   solUsd,
+  loading = false,
 }: Props) {
   return (
     <div className="token-activity-table-wrap">
@@ -126,7 +128,9 @@ export default function TokenGraduatedActivity({
             })
           ) : (
             <p className="px-1 py-14 text-center text-sm text-white/40">
-              No on-chain activity yet. Swaps, leverage, and borrows show up here as they land.
+              {loading
+                ? "Loading activity…"
+                : "No on-chain activity yet. Swaps, leverage, and borrows show up here as they land."}
             </p>
           )}
         </div>

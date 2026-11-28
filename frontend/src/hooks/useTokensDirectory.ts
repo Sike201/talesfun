@@ -14,7 +14,7 @@ import {
 import { setExploreListCache, takeExploreListCacheIfFresh } from "@/lib/exploreListCache";
 import { readLocalTradeActivity } from "@/lib/recentActivityLocal";
 import { isDemoMarketMint } from "@/lib/demoMarket";
-import type { Token } from "@/types";
+import { GRADUATION_SOL, type Token } from "@/types";
 
 export type DirectoryTab =
   | "trending"
@@ -39,6 +39,83 @@ function lastTradeMs(
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Best-effort Token stubs from Supabase `select *` for first paint. */
+function supabaseRowsToTokens(sbRows: unknown[], su: number | undefined): Token[] {
+  const out: Token[] = [];
+  for (const raw of sbRows) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const mint = typeof r.mint === "string" ? r.mint : "";
+    if (!mint || isDemoMarketMint(mint)) continue;
+
+    const solRaisedLamports = Number(r.sol_raised ?? 0);
+    const solRaised =
+      Number.isFinite(solRaisedLamports) && solRaisedLamports > 1e6
+        ? solRaisedLamports / 1e9
+        : Number.isFinite(solRaisedLamports)
+          ? solRaisedLamports
+          : 0;
+    const totalSupplyRaw = Number(r.total_supply ?? 0);
+    const totalSupply =
+      Number.isFinite(totalSupplyRaw) && totalSupplyRaw > 1e9
+        ? totalSupplyRaw / 1e6
+        : Number.isFinite(totalSupplyRaw) && totalSupplyRaw > 0
+          ? totalSupplyRaw
+          : 1_000_000_000;
+    const phaseRaw = typeof r.phase === "string" ? r.phase : "bonding";
+    const phase =
+      phaseRaw === "graduated" || phaseRaw === "ready_to_graduate"
+        ? phaseRaw
+        : "bonding";
+    const currentPrice =
+      typeof r.current_price === "number" && Number.isFinite(r.current_price)
+        ? r.current_price
+        : 0;
+
+    const stub: Token = {
+      id: mint,
+      mint,
+      name: typeof r.name === "string" && r.name ? r.name : "Token",
+      ticker: typeof r.symbol === "string" && r.symbol ? r.symbol : "???",
+      description: typeof r.description === "string" ? r.description : "",
+      about: typeof r.about === "string" ? r.about : undefined,
+      imageUrl: typeof r.image_url === "string" ? r.image_url : "",
+      creator: typeof r.creator === "string" ? r.creator : "",
+      creatorFeeRecipient:
+        typeof r.creator_fee_recipient === "string" && r.creator_fee_recipient
+          ? r.creator_fee_recipient
+          : typeof r.creator === "string"
+            ? r.creator
+            : "",
+      twitter: typeof r.twitter === "string" ? r.twitter : undefined,
+      telegram: typeof r.telegram === "string" ? r.telegram : undefined,
+      website: typeof r.website === "string" ? r.website : undefined,
+      metadataUri: typeof r.uri === "string" ? r.uri : undefined,
+      createdAt:
+        typeof r.created_at === "string" ? new Date(r.created_at) : new Date(),
+      phase,
+      solRaised,
+      targetSOL: GRADUATION_SOL,
+      tokensSold:
+        Number(r.tokens_sold ?? 0) > 1e6
+          ? Number(r.tokens_sold) / 1e6
+          : Number(r.tokens_sold ?? 0) || 0,
+      totalSupply,
+      currentPrice,
+      marketCap:
+        typeof r.market_cap === "number" && Number.isFinite(r.market_cap)
+          ? r.market_cap
+          : 0,
+      launchPrice: 0,
+      funders: typeof r.funders === "number" ? r.funders : 0,
+      gammPool:
+        typeof r.gamm_pool === "string" && r.gamm_pool ? r.gamm_pool : undefined,
+    };
+    out.push(applyTokenMarketCapUsd(stub, su));
+  }
+  return out;
+}
+
 export function useTokensDirectory() {
   const { connection } = useConnection();
   const [tokens, setTokens] = useState<Token[] | null>(null);
@@ -53,7 +130,6 @@ export function useTokensDirectory() {
   useEffect(() => {
     const cached = takeExploreListCacheIfFresh();
     if (cached) {
-      // Never resurrect the old Aether demo from a stale client cache.
       const cleaned = cached.tokens.filter(t => !isDemoMarketMint(t.mint));
       setTokens(cleaned);
       setSolUsd(cached.solUsd);
@@ -66,19 +142,11 @@ export function useTokensDirectory() {
 
     (async () => {
       try {
-        const [solUsdJson, sbJson, chainList, volJson, recentJson, devRecentJson] =
-          await Promise.all([
-            fetch("/api/sol-usd").then(r => r.json()).catch(() => ({})),
-            fetch("/api/tokens?limit=200").then(r => r.json()).catch(() => []),
-            fetchAllTokenStatesAsTokens(connection, undefined).catch(() => []),
-            fetch("/api/trades/volume-24h").then(r => r.json()).catch(() => ({})),
-            fetch("/api/trades/recent-activity")
-              .then(r => r.json())
-              .catch(() => ({ byMint: {} })),
-            fetch("/dev-recent-activity.json")
-              .then(r => (r.ok ? r.json() : {}))
-              .catch(() => ({})),
-          ]);
+        // Wave 1 — paint ASAP from sol price + Supabase (no getProgramAccounts / volume).
+        const [solUsdJson, sbJson] = await Promise.all([
+          fetch("/api/sol-usd").then(r => r.json()).catch(() => ({})),
+          fetch("/api/tokens?limit=200").then(r => r.json()).catch(() => []),
+        ]);
         if (cancelled) return;
 
         let su: number | undefined;
@@ -87,10 +155,23 @@ export function useTokensDirectory() {
         }
         setSolUsd(su ?? null);
 
-        const vj = volJson as { byMint?: Record<string, string> };
-        setVol24hLamportsByMint(
-          vj.byMint && typeof vj.byMint === "object" ? vj.byMint : {}
-        );
+        const sbRows = Array.isArray(sbJson) ? sbJson : [];
+        const quick = supabaseRowsToTokens(sbRows, su);
+        if (quick.length) {
+          setTokens(prev => (prev?.length ? prev : quick));
+        }
+
+        // Wave 2 — on-chain truth + recent activity (parallel).
+        const [chainList, recentJson, devRecentJson] = await Promise.all([
+          fetchAllTokenStatesAsTokens(connection, su).catch(() => [] as Token[]),
+          fetch("/api/trades/recent-activity")
+            .then(r => r.json())
+            .catch(() => ({ byMint: {} })),
+          fetch("/dev-recent-activity.json")
+            .then(r => (r.ok ? r.json() : {}))
+            .catch(() => ({})),
+        ]);
+        if (cancelled) return;
 
         const apiRecent =
           recentJson?.byMint && typeof recentJson.byMint === "object"
@@ -117,16 +198,15 @@ export function useTokensDirectory() {
         }
         setLastTradeByMint(mergedRecent);
 
-        const sbRows = Array.isArray(sbJson) ? sbJson : [];
         const byMint = supabaseTokensByMint(sbRows);
-        const merged = (chainList ?? [])
+        const merged = (chainList.length ? chainList : quick)
           .filter(t => !isDemoMarketMint(t.mint))
           .map(t => mergeTokenMetadataFromSupabaseRow(t, byMint.get(t.mint)))
           .map(t => applyTokenMarketCapUsd(t, su));
         setTokens(merged);
         setExploreListCache({
           tokens: merged,
-          vol24hLamportsByMint: vj.byMint ?? {},
+          vol24hLamportsByMint: {},
           solUsd: su ?? null,
         });
 
@@ -136,15 +216,26 @@ export function useTokensDirectory() {
               .filter(t => !isDemoMarketMint(t.mint))
               .map(t => applyTokenMarketCapUsd(t, su));
             setTokens(next);
-            setExploreListCache({
-              tokens: next,
-              vol24hLamportsByMint: vj.byMint ?? {},
-              solUsd: su ?? null,
-            });
           }
         });
+
+        // Wave 3 — volumes never block the grid.
+        void fetch("/api/trades/volume-24h")
+          .then(r => r.json())
+          .then(volJson => {
+            if (cancelled) return;
+            const vj = volJson as { byMint?: Record<string, string> };
+            const by = vj.byMint && typeof vj.byMint === "object" ? vj.byMint : {};
+            setVol24hLamportsByMint(by);
+            setExploreListCache({
+              tokens: merged,
+              vol24hLamportsByMint: by,
+              solUsd: su ?? null,
+            });
+          })
+          .catch(() => {});
       } catch {
-        if (!cancelled) setTokens([]);
+        if (!cancelled) setTokens(prev => prev ?? []);
       }
     })();
 
@@ -174,7 +265,6 @@ export function useTokensDirectory() {
 
   const volLamports = (mint: string) => BigInt(vol24hLamportsByMint[mint] ?? "0");
 
-  /** Trending = most recently traded, then 24h volume, then mcap. */
   const sortedTrending = useMemo(() => {
     const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
     list.sort((a, b) => {
@@ -189,14 +279,12 @@ export function useTokensDirectory() {
     return list;
   }, [tokens, lastTradeByMint, vol24hLamportsByMint]);
 
-  /** New = most recently created (any phase). */
   const sortedNew = useMemo(() => {
     const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
     list.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     return list;
   }, [tokens]);
 
-  /** Market cap = highest USD mcap first (any phase). */
   const sortedByMcap = useMemo(() => {
     const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
     list.sort((a, b) => b.marketCap - a.marketCap);
@@ -205,7 +293,6 @@ export function useTokensDirectory() {
 
   function filterByTab(tab: DirectoryTab, query: string): Token[] {
     const q = query.trim().toLowerCase();
-    // Search is global: name / ticker / mint (partial), not limited to the active tab.
     if (q) {
       const list = [...(tokens ?? [])].filter(t => !isDemoMarketMint(t.mint));
       const matched = list.filter(

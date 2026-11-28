@@ -5,7 +5,6 @@ import { useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
-import { MOCK_TOKENS } from "@/lib/mockData";
 import { DEMO_TOKEN, isDemoMarketMint } from "@/lib/demoMarket";
 import {
   formatUSD, formatNumber, shortenAddress, calcBondingCurveProgress,
@@ -211,6 +210,8 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
   walletLogRef.current = connectedWallet?.toBase58() ?? null;
   const [token, setToken] = useState<Token | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
+  /** True until first trades API response lands (avoids false "no activity" while volume was slow). */
+  const [tradesLoading, setTradesLoading] = useState(true);
   /** Live SPL mint supply (UI units) after graduation burns — preferred over token_state.total_supply. */
   const [mintSupplyUi, setMintSupplyUi] = useState<number | null>(null);
   const mintSupplyUiRef = useRef<number | null>(null);
@@ -270,6 +271,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           setMintSupplyUi(DEMO_TOKEN.totalSupply);
           setMetadataPending(false);
           setTrades([]);
+          setTradesLoading(false);
           setVolume24hLamportsStr("120000000000");
         }
         return;
@@ -295,13 +297,107 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         }
 
         // Paint from chain immediately — don't block UI on Supabase / volume.
+        // Keep any local journal rows; do NOT wipe to [] or Activity flashes empty
+        // for ~10s while volume-24h bonding backfill runs.
         const early = tokenStateToToken(stateRes, canonicalMint);
         if (!cancelled) {
           setToken(early);
-          setTrades(mergeApiAndLocalTrades([], canonicalMint));
+          setTradesLoading(true);
+          setTrades(prev =>
+            prev.length > 0 ? prev : mergeApiAndLocalTrades([], canonicalMint)
+          );
         }
 
-        const [sbRes, tradesRes, volRes, solUsdJson, mintSupplyRes] = await Promise.all([
+        const gammQ = early.gammPool
+          ? `&gammPool=${encodeURIComponent(early.gammPool)}`
+          : "";
+
+        // Fast path: Supabase-only (skipChain) so Activity paints in <1s.
+        // Background sync fills any missing chain rows without blocking UI.
+        const applyTradesBody = (
+          trWrap: { ok: boolean; status: number; body: unknown },
+          label: string
+        ) => {
+          if (cancelled) return;
+          const walletAtQuery = walletLogRef.current;
+          if (trWrap.ok && Array.isArray(trWrap.body)) {
+            const trData = trWrap.body as TradeHistoryRow[];
+            console.log(`[trade-history] ${label}`, {
+              mintQueried: canonicalMint,
+              walletAtQuery,
+              rowCount: trData.length,
+            });
+            setTrades(
+              mergeApiAndLocalTrades(
+                trData.map(mapTradeHistoryRow),
+                canonicalMint
+              )
+            );
+          } else {
+            console.warn(`[trade-history] ${label} failed`, {
+              mintQueried: canonicalMint,
+              walletAtQuery,
+              httpStatus: trWrap.status,
+              body: trWrap.body,
+            });
+            const local = tradesFromLocalHistory(canonicalMint);
+            if (local.length) setTrades(local);
+          }
+          setTradesLoading(false);
+        };
+
+        const tradesPromise = timed(
+          "supabase_trades",
+          fetch(
+            `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=200&skipChain=1${gammQ}`
+          ).then(async r => {
+            const j = await r.json();
+            return { ok: r.ok, status: r.status, body: j };
+          })
+        ).then(trWrap => {
+          applyTradesBody(trWrap, "initial load OK");
+          // Background chain sync — do not await.
+          void fetch(
+            `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=200&sync=1${gammQ}`
+          )
+            .then(async r => {
+              const j = await r.json();
+              return { ok: r.ok, status: r.status, body: j };
+            })
+            .then(bg => applyTradesBody(bg, "background sync"))
+            .catch(e =>
+              console.warn("[trade-history] background sync failed", e)
+            );
+          return trWrap;
+        });
+
+        const volPromise = timed(
+          "volume_24h",
+          fetch(
+            `/api/trades/volume-24h?mint=${encodeURIComponent(canonicalMint)}&skipBonding=1`
+          ).then(r => r.json())
+        ).then(volRes => {
+          if (cancelled) return volRes;
+          const volData = volRes as {
+            byMint?: Record<string, string>;
+            error?: string;
+          };
+          if (volData && !volData.error && volData.byMint) {
+            const lamports = volData.byMint[canonicalMint] ?? "0";
+            setVolume24hLamportsStr(lamports);
+            console.log(
+              "[volume24h client] mint",
+              canonicalMint,
+              "raw 24h lamports sum",
+              lamports,
+              "sol",
+              lamportsStrToSol(lamports)
+            );
+          }
+          return volRes;
+        });
+
+        const [sbRes, , , solUsdJson, mintSupplyRes] = await Promise.all([
           timed(
             "supabase_token_row",
             fetch(`/api/tokens/${encodeURIComponent(canonicalMint)}`).then(
@@ -320,25 +416,8 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
               }
             )
           ),
-          timed(
-            "supabase_trades",
-            fetch(
-              `/api/tokens/${encodeURIComponent(canonicalMint)}/trades?limit=200${
-                early.gammPool
-                  ? `&gammPool=${encodeURIComponent(early.gammPool)}`
-                  : ""
-              }`
-            ).then(async r => {
-              const j = await r.json();
-              return { ok: r.ok, status: r.status, body: j };
-            })
-          ),
-          timed(
-            "volume_24h",
-            fetch(
-              `/api/trades/volume-24h?mint=${encodeURIComponent(canonicalMint)}`
-            ).then(r => r.json())
-          ),
+          tradesPromise,
+          volPromise,
           timed("sol_usd", fetch("/api/sol-usd").then(r => r.json())),
           timed(
             "mint_supply",
@@ -395,54 +474,6 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           );
         }
 
-        const trWrap = tradesRes as {
-          ok: boolean;
-          status: number;
-          body: unknown;
-        };
-        const walletAtQuery = walletLogRef.current;
-        if (trWrap.ok && Array.isArray(trWrap.body)) {
-          const trData = trWrap.body as TradeHistoryRow[];
-          console.log("[trade-history] initial load OK", {
-            mintQueried: canonicalMint,
-            walletAtQuery,
-            rowCount: trData.length,
-          });
-          setTrades(
-            mergeApiAndLocalTrades(trData.map(mapTradeHistoryRow), canonicalMint)
-          );
-        } else {
-          console.warn(
-            "[trade-history] initial load failed (trades not replaced)",
-            {
-              mintQueried: canonicalMint,
-              walletAtQuery,
-              httpStatus: trWrap.status,
-              body: trWrap.body,
-            }
-          );
-          setTrades(tradesFromLocalHistory(canonicalMint));
-        }
-
-        const volData = volRes as {
-          byMint?: Record<string, string>;
-          error?: string;
-        };
-        if (volData && !volData.error && volData.byMint) {
-          const lamports = volData.byMint[canonicalMint] ?? "0";
-          setVolume24hLamportsStr(lamports);
-          console.log(
-            "[volume24h client] mint",
-            canonicalMint,
-            "raw 24h lamports sum",
-            lamports,
-            "sol",
-            lamportsStrToSol(lamports)
-          );
-        } else {
-          setVolume24hLamportsStr("0");
-        }
-
         setToken(next);
         requestTokenPhaseSync(canonicalMint);
 
@@ -471,14 +502,12 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         } else {
           console.log("[metadata] token page: no remote URI fetch needed");
         }
-      } catch {
+      } catch (e) {
+        // Never fall back to unrelated mock tokens (was showing Cosmic Vibes).
+        console.error("[token-page] load failed", id, e);
         if (!cancelled) {
-          const mock =
-            MOCK_TOKENS.find(t => t.id === id || t.mint === id) ?? MOCK_TOKENS[0];
-          setToken(mock);
           setMetadataPending(false);
-          setTrades([]);
-          setVolume24hLamportsStr("0");
+          setTradesLoading(false);
         }
       }
     }
@@ -840,6 +869,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
       <BondingPhasePage
         token={token}
         trades={trades}
+        tradesLoading={tradesLoading}
         volume24hUsdLabel={volume24hUsdLabel}
         holderCount={holderCount}
         holderLoading={holderLoading}
@@ -973,6 +1003,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
               solUsd={solUsd}
               holderCount={holderCount}
               holderLoading={holderLoading}
+              tradesLoading={tradesLoading}
               omnipairPoolSnapshot={
                 omnipairPoolLive ? omnipairSnapshot ?? null : null
               }
@@ -1121,6 +1152,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
 function BondingPhasePage({
   token,
   trades,
+  tradesLoading,
   volume24hUsdLabel,
   holderCount,
   holderLoading,
@@ -1135,6 +1167,7 @@ function BondingPhasePage({
 }: {
   token: Token;
   trades: Trade[];
+  tradesLoading: boolean;
   volume24hUsdLabel: string;
   holderCount: number | null;
   holderLoading: boolean;
@@ -1294,6 +1327,7 @@ function BondingPhasePage({
               solUsd={solUsd}
               holderCount={holderCount}
               holderLoading={holderLoading}
+              tradesLoading={tradesLoading}
               omnipairPoolSnapshot={null}
               poolReady={false}
               initialSection={

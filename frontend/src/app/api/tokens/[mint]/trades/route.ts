@@ -98,14 +98,14 @@ export async function GET(
       new Promise<void>((r) => setTimeout(r, 4000)),
     ]);
 
-    const warmEnough = bySig.size >= Math.min(10, limit);
-    const bondingRows = [...bySig.values()].filter(r => r.source === "bonding")
-      .length;
+    // Fast path: any warm Supabase/local rows → return immediately unless sync=1.
+    // Graduated mints often have dozens of omnipair rows but 0 bonding rows; the old
+    // "bondingRows < 5" gate forced a multi-second chain scan on every token page load.
+    const warmEnough = bySig.size >= Math.min(5, limit);
     const shouldSyncOmnipair =
       !skipChain && (forceSync || bySig.size === 0 || !warmEnough);
-    // Bonding history must feed 24h volume even when Omnipair rows already warm the DB.
     const shouldSyncBonding =
-      !skipChain && (forceSync || bondingRows < 5 || bySig.size === 0);
+      !skipChain && (forceSync || bySig.size === 0);
 
     let source: "supabase" | "chain" | "merged" =
       bySig.size > 0 ? "supabase" : "supabase";
@@ -154,7 +154,7 @@ export async function GET(
         const bonding = await indexBondingTradesForMint(connection, mint, {
           limit: Math.min(120, Math.max(limit, 40)),
           knownSignatures: new Set(bySig.keys()),
-          deadlineMs: Date.now() + (bondingRows > 0 ? 5_000 : 14_000),
+          deadlineMs: Date.now() + (forceSync ? 14_000 : 8_000),
           persist: true,
         });
         for (const t of bonding.trades) {
