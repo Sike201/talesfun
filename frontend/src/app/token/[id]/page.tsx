@@ -3,13 +3,12 @@
 import { use, useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import Image from "next/image";
-import Link from "next/link";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import { MOCK_TOKENS } from "@/lib/mockData";
 import { DEMO_TOKEN, isDemoMarketMint } from "@/lib/demoMarket";
 import {
-  formatUSD, formatNumber, shortenAddress, timeAgo, calcBondingCurveProgress,
+  formatUSD, formatNumber, shortenAddress, calcBondingCurveProgress,
   formatSolPerTokenPrice,
   formatTokenPriceUsd,
 } from "@/lib/utils";
@@ -41,11 +40,8 @@ import TradingInterface from "@/components/ui/TradingInterface";
 import TokenGraduatedFeed from "@/components/token/TokenGraduatedFeed";
 import TokenGraduatedInfo from "@/components/token/TokenGraduatedInfo";
 import { FIXED_SUPPLY, Token, Trade } from "@/types";
-import {
-  ExternalLink, Copy, CheckCircle2, ArrowUpRight
-} from "lucide-react";
+import { Copy, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
-import { cn } from "@/lib/utils";
 import { logTokenStateChainVsSupabase } from "@/lib/debugChainVsSupabase";
 import { logBondingPanelDebug } from "@/lib/bondingCurveQuote";
 import {
@@ -797,7 +793,6 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
     displayLiqUsd != null && isThinLiquidity(displayMarketCapUsd, displayLiqUsd);
 
   const volume24hUsdLabel = volume24hUsdFormatted(volume24hLamportsStr, solUsd);
-  const volume24hSol = lamportsStrToSol(volume24hLamportsStr);
 
   const copyMint = () => {
     navigator.clipboard.writeText(token.mint);
@@ -847,7 +842,6 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         token={token}
         trades={trades}
         volume24hUsdLabel={volume24hUsdLabel}
-        volume24hSol={volume24hSol}
         holderCount={holderCount}
         holderLoading={holderLoading}
         progress={progress}
@@ -856,7 +850,8 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
         copied={copied}
         copyMint={copyMint}
         metadataPending={metadataPending}
-        postTradeSyncing={postTradeSyncing}
+        displayLiqUsd={displayLiqUsd}
+        feedInitialSection={feedInitialSection}
       />
     );
   }
@@ -869,7 +864,7 @@ export default function TokenPage({ params }: { params: Promise<{ id: string }> 
           <div className="flex gap-3.5">
             <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-white/[0.06]">
               {metadataPending && !token.imageUrl?.trim() ? (
-                <div className="absolute inset-0 animate-pulse bg-white/10" aria-hidden />
+                <div className="absolute inset-0 animate-pulse bg-zinc-800/80" aria-hidden />
               ) : token.imageUrl?.trim() ? (
                 <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
               ) : (
@@ -1128,7 +1123,6 @@ function BondingPhasePage({
   token,
   trades,
   volume24hUsdLabel,
-  volume24hSol,
   holderCount,
   holderLoading,
   progress,
@@ -1137,12 +1131,12 @@ function BondingPhasePage({
   copied,
   copyMint,
   metadataPending,
-  postTradeSyncing,
+  displayLiqUsd,
+  feedInitialSection,
 }: {
-  token: any;
-  trades: any[];
+  token: Token;
+  trades: Trade[];
   volume24hUsdLabel: string;
-  volume24hSol: number;
   holderCount: number | null;
   holderLoading: boolean;
   progress: number;
@@ -1151,7 +1145,8 @@ function BondingPhasePage({
   copied: boolean;
   copyMint: () => void;
   metadataPending: boolean;
-  postTradeSyncing: boolean;
+  displayLiqUsd: number | null;
+  feedInitialSection?: "activity" | "holders" | "positions";
 }) {
   const safeProgress = Number.isFinite(progress)
     ? Math.min(Math.max(0, progress), 100)
@@ -1164,6 +1159,10 @@ function BondingPhasePage({
     Number.isFinite(token.totalSupply)
       ? token.currentPrice * token.totalSupply * solUsd
       : token.marketCap;
+  const priceUSD =
+    solUsd != null && token.currentPrice > 0
+      ? token.currentPrice * solUsd
+      : null;
 
   useEffect(() => {
     logBondingPanelDebug(token, solUsd);
@@ -1182,180 +1181,140 @@ function BondingPhasePage({
   ]);
 
   return (
-    <div data-tales-page className="min-h-screen px-6 py-8">
-      <div className="token-page mx-auto max-w-6xl">
-        <div className="mb-6 flex items-center gap-2 text-xs text-white/40">
-          <Link href="/launches" className="transition-colors hover:text-emerald-400">Explore</Link>
-          <span>/</span>
-          <span className="text-white/60">{token.name}</span>
-        </div>
-
-        <div className="flex items-center gap-4 mb-6">
-          <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-white/10">
-            {metadataPending && !token.imageUrl?.trim() ? (
-              <div className="absolute inset-0 animate-pulse bg-white/10" aria-hidden />
-            ) : token.imageUrl?.trim() ? (
-              <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white/45" aria-hidden>
-                {token.ticker.slice(0, 2).toUpperCase()}
+    <div data-tales-page className="min-h-screen">
+      <div className="token-page">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex gap-3.5">
+            <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-white/[0.06]">
+              {metadataPending && !token.imageUrl?.trim() ? (
+                <div className="absolute inset-0 animate-pulse bg-zinc-800/80" aria-hidden />
+              ) : token.imageUrl?.trim() ? (
+                <Image src={token.imageUrl} alt={token.name} fill className="object-cover" unoptimized />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center text-lg font-semibold text-white/45">
+                  {token.ticker.slice(0, 2).toUpperCase()}
+                </div>
+              )}
+            </div>
+            <div className="min-w-0 pt-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-[1.65rem] font-semibold tracking-tight text-white">
+                  {token.name}
+                </h1>
               </div>
-            )}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg font-semibold text-white">{token.name}</h1>
-              <span className="text-sm text-white/40">{token.ticker}</span>
-              <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Live</span>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] font-medium text-white/55">
+                  ${token.ticker}
+                </span>
+                <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-200/80">
+                  Bonding
+                </span>
+                <button
+                  type="button"
+                  onClick={copyMint}
+                  className="ml-1 inline-flex items-center gap-1 font-mono text-[11px] text-white/35 transition-colors hover:text-white/65"
+                >
+                  {shortenAddress(token.mint, 4)}
+                  {copied ? <CheckCircle2 size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </header>
 
-        <div className="mb-6">
-          <div className="flex items-center justify-between text-xs mb-1.5">
-            <span className="font-semibold text-emerald-400">
-              {solUsd != null ? formatUSD(token.solRaised * solUsd) : `${token.solRaised} SOL`}
+        <div className="mt-4 mb-1">
+          <div className="mb-1.5 flex items-center justify-between text-[11px]">
+            <span className="font-medium text-white/55">
+              {solUsd != null
+                ? formatUSD(token.solRaised * solUsd)
+                : `${token.solRaised.toFixed(2)} SOL`}{" "}
+              raised
             </span>
-            <span className="text-white/40">{safeProgress.toFixed(0)}%</span>
-            <span className="text-white/40">{raiseGoal} <span className="text-white/30">goal</span></span>
+            <span className="tabular-nums text-white/40">
+              {safeProgress.toFixed(0)}% · {raiseGoal} goal
+            </span>
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-white/10">
-            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${safeProgress}%` }} />
+          <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className="h-full rounded-full bg-emerald-500/90 transition-all"
+              style={{ width: `${safeProgress}%` }}
+            />
           </div>
         </div>
 
-        <div className="grid lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-5">
+        <div className="token-stat-strip">
+          <div>
+            <p className="token-stat-label">Market cap</p>
+            <p className="token-stat-value">
+              {displayMcapUsd > 0 ? formatUSD(displayMcapUsd) : "…"}
+            </p>
+          </div>
+          <div>
+            <p className="token-stat-label">Price</p>
+            <p className="token-stat-value tabular-nums">
+              {priceUSD != null
+                ? formatTokenPriceUsd(priceUSD)
+                : formatSolPerTokenPrice(token.currentPrice)}
+            </p>
+          </div>
+          <div>
+            <p className="token-stat-label">24h volume</p>
+            <p className="token-stat-value">{volume24hUsdLabel}</p>
+          </div>
+          <div>
+            <p className="token-stat-label">Liquidity</p>
+            <p className="token-stat-value">
+              {displayLiqUsd != null ? formatUSD(displayLiqUsd) : "—"}
+            </p>
+          </div>
+          <div>
+            <p className="token-stat-label">Holders</p>
+            <p className="token-stat-value">
+              {holderLoading ? "…" : formatNumber(holderCount ?? 0)}
+            </p>
+          </div>
+        </div>
+
+        <div className="token-layout-main">
+          <div>
             <TokenCandlestickChart
               mint={token.mint}
               ticker={token.ticker}
               solUsd={solUsd}
-              livePriceSol={
-                token.currentPrice > 0 ? token.currentPrice : null
-              }
+              livePriceSol={token.currentPrice > 0 ? token.currentPrice : null}
               totalSupply={
                 Number.isFinite(token.totalSupply) && token.totalSupply > 0
                   ? token.totalSupply
                   : null
               }
             />
-            <div className="op-surface rounded-xl p-6">
-              <h2 className="mb-4 text-sm font-semibold text-white">About</h2>
-              {metadataPending &&
-              !String(token.about || token.description || "").trim() ? (
-                <div className="space-y-2 animate-pulse" aria-hidden>
-                  <div className="h-3 w-full rounded bg-white/10" />
-                  <div className="h-3 w-[92%] rounded bg-white/10" />
-                  <div className="h-3 w-4/5 rounded bg-white/10" />
-                </div>
-              ) : (
-                <div className="whitespace-pre-line text-sm leading-relaxed text-white/60">
-                  {token.about || token.description}
-                </div>
-              )}
-            </div>
-            <div className="op-surface overflow-hidden rounded-xl">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-6 py-4">
-                <div className="flex min-w-0 items-center gap-2">
-                  <h2 className="text-sm font-semibold text-white">Trade History</h2>
-                  {postTradeSyncing && (
-                    <span className="text-[10px] text-amber-600 font-medium shrink-0">
-                      Updating market data…
-                    </span>
-                  )}
-                </div>
-                  <span className="text-[10px] tabular-nums text-white/40">
-                  Volume (24h){" "}
-                  <span className="font-semibold text-white/70">{volume24hUsdLabel}</span>
-                </span>
-              </div>
-              {trades.length > 0 ? (
-                <div className="max-h-[calc(7*(3rem+1px))] overflow-y-auto">
-                  {trades.map((trade: any) => (
-                    <div key={trade.id} className="flex items-center gap-4 border-b border-white/[0.06] px-6 py-3 text-xs last:border-0 hover:bg-white/[0.03]">
-                      <span className={cn("font-semibold w-8 shrink-0", trade.type === "buy" ? "text-green-500" : "text-red-500")}>{trade.type}</span>
-                      <span className="min-w-0 flex-1 text-white/60">{formatNumber(trade.tokenAmount)} {token.ticker}</span>
-                      <span className="shrink-0 tabular-nums text-white/60">{trade.solAmount.toFixed(4)} SOL</span>
-                      <span className="shrink-0 text-white/40" title={trade.trader}>
-                        {trade.trader ? shortenAddress(trade.trader) : "—"}
-                      </span>
-                      <span className="shrink-0 text-white/40">{timeAgo(trade.timestamp)}</span>
-                      <a
-                        href={`https://solscan.io/tx/${trade.txSignature}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="shrink-0 text-white/30 hover:text-white/60"
-                        aria-label="View transaction"
-                      >
-                        <ArrowUpRight size={11} />
-                      </a>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="px-6 py-10 text-center text-sm text-white/40">
-                  No trades in Supabase for this mint yet.
-                </div>
-              )}
-            </div>
+
+            <TokenGraduatedFeed
+              token={token}
+              trades={trades}
+              solUsd={solUsd}
+              holderCount={holderCount}
+              holderLoading={holderLoading}
+              omnipairPoolSnapshot={null}
+              poolReady={false}
+              initialSection={
+                feedInitialSection === "holders" ? "holders" : "activity"
+              }
+              hidePositions
+            />
+
+            <TokenGraduatedInfo
+              token={token}
+              copied={copied}
+              onCopyMint={copyMint}
+              omnipairSnapshot={null}
+              solUsd={solUsd}
+              metadataPending={metadataPending}
+            />
           </div>
 
-          <div className="space-y-4">
-            <div className="op-surface overflow-hidden rounded-xl">
-              <TradePanel token={token} />
-            </div>
-            <div className="op-surface rounded-xl p-5">
-              <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-white/40">Details</h3>
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between gap-2">
-                  <span className="shrink-0 text-white/40">Price</span>
-                  <span className="text-right font-semibold tabular-nums text-white">
-                    {formatSolPerTokenPrice(token.currentPrice)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-white/40">Market Cap</span>
-                  <span className="font-semibold tabular-nums text-white">
-                    {formatUSD(displayMcapUsd)}
-                  </span>
-                </div>
-                <div className="flex justify-between"><span className="text-white/40">Raise Goal</span><span className="text-white/60">{raiseGoal}</span></div>
-                <div className="flex justify-between">
-                  <span className="text-white/40">Supply</span>
-                  <span className="tabular-nums text-white/60">
-                    {Number(token.totalSupply).toLocaleString("en-US", {
-                      maximumFractionDigits: 0,
-                      minimumFractionDigits: 0,
-                    })}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-white/40">Holders</span>
-                  <span className="font-medium tabular-nums text-white/60">
-                    {holderLoading ? "…" : formatNumber(holderCount ?? 0)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-white/40">Volume (24h)</span>
-                  <span className="font-medium tabular-nums text-white/60">
-                    {volume24hUsdLabel}
-                    {solUsd == null && volume24hSol > 0 ? ` (${volume24hSol.toFixed(2)} SOL)` : ""}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="op-surface rounded-xl p-5">
-              <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-white/40">Contract</h3>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 truncate font-mono text-xs text-white/50">{token.mint}</code>
-                <button onClick={copyMint} className="text-white/40 transition-colors hover:text-white/70">
-                  {copied ? <CheckCircle2 size={13} className="text-green-500" /> : <Copy size={13} />}
-                </button>
-                <a href={`https://explorer.solana.com/address/${token.mint}?cluster=devnet`} target="_blank" rel="noopener noreferrer" className="text-white/40 transition-colors hover:text-white/70">
-                  <ExternalLink size={13} />
-                </a>
-              </div>
-            </div>
+          <div className="token-layout-rail flex flex-col gap-4">
+            <TradePanel token={token} />
           </div>
         </div>
       </div>

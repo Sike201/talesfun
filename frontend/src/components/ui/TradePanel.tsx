@@ -852,131 +852,149 @@ export default function TradePanel({ token }: Props) {
   };
 
   return (
-    <div className="p-4">
-      {/* Toggle */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex bg-gray-100 rounded-xl p-1 flex-1">
+    <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0c0c0c]">
+      <div className="border-b border-white/[0.06] px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[12px] font-semibold tracking-wide text-white/80">
+            Swap
+          </p>
+          <span className="text-[10px] font-medium text-white/35">1% fee</span>
+        </div>
+      </div>
+
+      <div className="space-y-3 p-4">
+        <div className="flex gap-1 rounded-xl bg-white/[0.04] p-1">
           {(["buy", "sell"] as const).map(m => (
             <button
               key={m}
               type="button"
               disabled={isTrading}
-              onClick={() => { if (isTrading) return; setMode(m); setAmount(""); }}
+              onClick={() => {
+                if (isTrading) return;
+                setMode(m);
+                setAmount("");
+              }}
               className={cn(
-                "flex-1 py-2 rounded-lg text-sm font-semibold transition-all capitalize",
+                "flex-1 rounded-lg py-2 text-sm font-semibold capitalize transition-all",
                 mode === m
-                  ? m === "buy" ? "bg-green-500 text-white shadow-sm" : "bg-red-500 text-white shadow-sm"
-                  : "text-gray-400"
+                  ? m === "buy"
+                    ? "bg-emerald-500/90 text-white shadow-sm"
+                    : "bg-red-500/90 text-white shadow-sm"
+                  : "text-white/40 hover:text-white/70"
               )}
             >
               {m}
             </button>
           ))}
         </div>
-        <span className="text-[10px] text-gray-300 ml-3">1% fee</span>
-      </div>
 
-      {/* Input */}
-      <div className="relative mb-2">
-        <input
-          type="number"
-          value={amount}
-          disabled={isTrading}
-          onChange={e => setAmount(e.target.value)}
-          placeholder="0"
-          className="w-full bg-gray-100 rounded-xl px-4 py-3 text-sm font-medium text-gray-900 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-green-500/20 transition-all pr-16 disabled:opacity-50"
-        />
-        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-400">
-          {mode === "buy" ? "SOL" : token.ticker}
-        </span>
-      </div>
-
-      {/* Quick amounts */}
-      <div className="flex gap-1.5 mb-3">
-        {quickAmounts.map(q => (
-          <button
-            key={q}
-            type="button"
-            disabled={mode === "buy" ? isTrading : sellQuickDisabled}
-            onClick={() => {
-              if (isTrading) return;
-              if (mode === "buy") {
-                setAmount(q);
-                return;
-              }
-              const pct = parseInt(q, 10);
-              if (!Number.isFinite(pct) || pct <= 0) return;
-              applySellPercent(pct);
-            }}
-            className="flex-1 py-1.5 text-[10px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition-colors disabled:opacity-50"
-          >
-            {q}
-          </button>
-        ))}
-      </div>
-
-      {/* Estimate */}
-      {amount &&
-        (mode === "buy" ? buySolUi != null && buySolUi > 0 : amount.trim() !== "") && (
-        <div className="bg-gray-100 rounded-xl p-3 mb-3 text-xs text-gray-500">
-          You will receive ~<span className="text-gray-900 font-medium ml-1">
-            {mode === "buy" ? (
-              !bondingQuoteReady ? (
-                <span className="text-amber-700">Loading curve…</span>
-              ) : buyQuote ? (
-                <>
-                  {(Number(buyQuote.tokensOutCappedRaw.toString()) / 1e6).toLocaleString(undefined, {
-                    maximumFractionDigits: 2,
-                  })}{" "}
-                  {token.ticker}
-                  {buyQuote.saturated ? (
-                    <span className="block text-amber-700 font-normal mt-1">
-                      Max bonding supply — extra SOL would not mint more (buy will use up to{" "}
-                      {(buyQuote.effectiveGrossLamports.toNumber() / 1e9).toFixed(4)} SOL on-chain).
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                "—"
-              )
-            ) : !bondingQuoteReady ? (
-              <span className="text-amber-700">Loading curve…</span>
-            ) : sellSolEstimateSol != null ? (
-              `${sellSolEstimateSol.toFixed(6)} SOL`
-            ) : (
-              "—"
-            )}
+        <div className="relative">
+          <input
+            type="number"
+            value={amount}
+            disabled={isTrading}
+            onChange={e => setAmount(e.target.value)}
+            placeholder="0"
+            className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 pr-16 text-sm font-medium text-white placeholder:text-white/25 focus:border-white/20 focus:outline-none disabled:opacity-50"
+          />
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-semibold text-white/45">
+            {mode === "buy" ? "SOL" : token.ticker}
           </span>
         </div>
-      )}
 
-      {/* Action */}
-      {connected ? (
-        <button
-          type="button"
-          onClick={handleTrade}
-          disabled={isTrading || !amount}
-          className={cn(
-            "w-full py-3 rounded-xl font-semibold text-sm transition-all",
-            mode === "buy"
-              ? "bg-green-500 hover:bg-green-600 text-white disabled:opacity-40"
-              : "bg-red-500 hover:bg-red-600 text-white disabled:opacity-40"
+        <div className="flex gap-1.5">
+          {quickAmounts.map(q => (
+            <button
+              key={q}
+              type="button"
+              disabled={mode === "buy" ? isTrading : sellQuickDisabled}
+              onClick={() => {
+                if (isTrading) return;
+                if (mode === "buy") {
+                  setAmount(q);
+                  return;
+                }
+                const pct = parseInt(q, 10);
+                if (!Number.isFinite(pct) || pct <= 0) return;
+                applySellPercent(pct);
+              }}
+              className="flex-1 rounded-lg bg-white/[0.05] py-1.5 text-[10px] font-medium text-white/45 transition-colors hover:bg-white/[0.09] hover:text-white/75 disabled:opacity-40"
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+
+        {amount &&
+          (mode === "buy"
+            ? buySolUi != null && buySolUi > 0
+            : amount.trim() !== "") && (
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-white/45">
+              You will receive ~
+              <span className="ml-1 font-medium text-white/85">
+                {mode === "buy" ? (
+                  !bondingQuoteReady ? (
+                    <span className="text-amber-300/90">Loading curve…</span>
+                  ) : buyQuote ? (
+                    <>
+                      {(
+                        Number(buyQuote.tokensOutCappedRaw.toString()) / 1e6
+                      ).toLocaleString(undefined, {
+                        maximumFractionDigits: 2,
+                      })}{" "}
+                      {token.ticker}
+                      {buyQuote.saturated ? (
+                        <span className="mt-1 block font-normal text-amber-300/90">
+                          Max bonding supply — extra SOL would not mint more
+                          (buy will use up to{" "}
+                          {(
+                            buyQuote.effectiveGrossLamports.toNumber() / 1e9
+                          ).toFixed(4)}{" "}
+                          SOL on-chain).
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    "—"
+                  )
+                ) : !bondingQuoteReady ? (
+                  <span className="text-amber-300/90">Loading curve…</span>
+                ) : sellSolEstimateSol != null ? (
+                  `${sellSolEstimateSol.toFixed(6)} SOL`
+                ) : (
+                  "—"
+                )}
+              </span>
+            </div>
           )}
-        >
-          {isTrading ? (
-            <span className="flex items-center justify-center gap-2">
-              <ArrowDownUp size={14} className="animate-spin" />
-              {tradePhase === "submitting" && "Submitting…"}
-              {tradePhase === "confirming" && "Confirming…"}
-              {tradePhase === "syncing" && "Updating market…"}
-            </span>
-          ) : (
-            `${mode === "buy" ? "Buy" : "Sell"} ${token.ticker}`
-          )}
-        </button>
-      ) : (
-        <WalletMultiButton />
-      )}
+
+        {connected ? (
+          <button
+            type="button"
+            onClick={handleTrade}
+            disabled={isTrading || !amount}
+            className={cn(
+              "w-full rounded-xl py-3 text-sm font-semibold transition-all disabled:opacity-40",
+              mode === "buy"
+                ? "bg-emerald-500 text-white hover:bg-emerald-400"
+                : "bg-red-500 text-white hover:bg-red-400"
+            )}
+          >
+            {isTrading ? (
+              <span className="flex items-center justify-center gap-2">
+                <ArrowDownUp size={14} className="animate-spin" />
+                {tradePhase === "submitting" && "Submitting…"}
+                {tradePhase === "confirming" && "Confirming…"}
+                {tradePhase === "syncing" && "Updating market…"}
+              </span>
+            ) : (
+              `${mode === "buy" ? "Buy" : "Sell"} ${token.ticker}`
+            )}
+          </button>
+        ) : (
+          <WalletMultiButton />
+        )}
+      </div>
     </div>
   );
 }

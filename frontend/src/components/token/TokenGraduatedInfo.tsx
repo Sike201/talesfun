@@ -185,12 +185,20 @@ export default function TokenGraduatedInfo({
             </div>
           </>
         ) : (
-          <div className="token-info-row">
-            <dt>Liquidity</dt>
-            <dd>
-              <span className="text-sm text-white/45">Pool pending</span>
-            </dd>
-          </div>
+          <>
+            <div className="token-info-row">
+              <dt>Curve raised</dt>
+              <dd className="text-sm font-semibold tabular-nums text-white">
+                {token.solRaised.toFixed(2)} / {token.targetSOL} SOL
+              </dd>
+            </div>
+            <div className="token-info-row">
+              <dt>Created</dt>
+              <dd className="text-sm font-semibold tabular-nums text-white">
+                {formatPairAge(token.createdAt)}
+              </dd>
+            </div>
+          </>
         )}
 
         {token.twitter ? (

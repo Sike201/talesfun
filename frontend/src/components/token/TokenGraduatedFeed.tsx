@@ -22,6 +22,8 @@ type Props = {
   omnipairPoolSnapshot?: OmnipairPoolSnapshot | null;
   poolReady?: boolean;
   initialSection?: GraduatedFeedSection;
+  /** Bonding markets have no Omnipair positions — hide that tab. */
+  hidePositions?: boolean;
 };
 
 export default function TokenGraduatedFeed({
@@ -32,13 +34,16 @@ export default function TokenGraduatedFeed({
   holderLoading,
   omnipairPoolSnapshot = null,
   initialSection = "activity",
+  hidePositions = false,
 }: Props) {
   const { publicKey } = useWallet();
-  const [section, setSection] = useState<GraduatedFeedSection>(
-    initialSection === "holders" || initialSection === "positions"
-      ? initialSection
-      : "activity"
-  );
+  const [section, setSection] = useState<GraduatedFeedSection>(() => {
+    if (hidePositions && initialSection === "positions") return "activity";
+    if (initialSection === "holders" || initialSection === "positions") {
+      return initialSection;
+    }
+    return "activity";
+  });
   const [myPositionCount, setMyPositionCount] = useState(0);
   const walletKey = publicKey?.toBase58() ?? null;
 
@@ -99,23 +104,25 @@ export default function TokenGraduatedFeed({
         >
           Activity
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={section === "positions"}
-          onClick={() => setSection("positions")}
-          className={cn(
-            "token-feed-tab",
-            section === "positions" && "token-feed-tab-active"
-          )}
-        >
-          Positions
-          {walletKey ? (
-            <span className="ml-2 text-sm font-normal text-white/40">
-              {formatNumber(myPositionCount)}
-            </span>
-          ) : null}
-        </button>
+        {!hidePositions ? (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={section === "positions"}
+            onClick={() => setSection("positions")}
+            className={cn(
+              "token-feed-tab",
+              section === "positions" && "token-feed-tab-active"
+            )}
+          >
+            Positions
+            {walletKey ? (
+              <span className="ml-2 text-sm font-normal text-white/40">
+                {formatNumber(myPositionCount)}
+              </span>
+            ) : null}
+          </button>
+        ) : null}
         <button
           type="button"
           role="tab"
@@ -142,7 +149,7 @@ export default function TokenGraduatedFeed({
             trades={trades}
             solUsd={solUsd}
           />
-        ) : section === "positions" ? (
+        ) : section === "positions" && !hidePositions ? (
           <TokenPositionsList
             mint={token.mint}
             ticker={token.ticker}

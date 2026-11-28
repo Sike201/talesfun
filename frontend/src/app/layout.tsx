@@ -21,8 +21,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={cn(geist.variable, fraunces.variable, "dark")}>
-      <body className={cn(geist.className, "antialiased")}>
+    <html lang="en" className={cn(geist.variable, fraunces.variable, "dark")} style={{ backgroundColor: "#0a0a0a" }}>
+      <body className={cn(geist.className, "antialiased bg-[#0a0a0a] text-white")} style={{ backgroundColor: "#0a0a0a" }}>
         <WalletContextProvider>
           <HomeBodyClass />
           <Navbar />

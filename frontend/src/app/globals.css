@@ -117,6 +117,7 @@
 html {
   scroll-behavior: smooth;
   color-scheme: dark;
+  background-color: #0a0a0a;
 }
 
 body {
@@ -292,8 +293,8 @@ input[type=number] { -moz-appearance: textfield; }
 /* Scrollbar — minimal */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #52525b; }
 
 /* Hide scrollbar but keep scroll functionality */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
@@ -304,7 +305,7 @@ input[type=number] { -moz-appearance: textfield; }
   transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 .card-interactive:hover {
-  background-color: #F9FAFB;
+  background-color: rgba(255, 255, 255, 0.04);
 }
 
 /* ── Glass button (port of codepen.io/Petr-Knoll/pen/QwWLZdx) ─────────── */
@@ -952,8 +953,9 @@ html body:has([data-tales-page]) .wallet-adapter-button-trigger {
 
 [data-tales-page] .token-info-row--pool dd {
   display: flex;
-  justify-content: flex-end;
-  gap: 1.35rem;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.85rem 1.35rem;
   font-size: 0.875rem;
   font-weight: 600;
   color: #fff;

@@ -5,6 +5,7 @@ import {
   getIndexerRpcConnection,
   indexOmnipairSwapsForMint,
 } from "@/lib/omnipairIndexer";
+import { indexBondingTradesForMint } from "@/lib/bondingIndexer";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -98,13 +99,18 @@ export async function GET(
     ]);
 
     const warmEnough = bySig.size >= Math.min(10, limit);
-    const shouldSyncChain =
+    const bondingRows = [...bySig.values()].filter(r => r.source === "bonding")
+      .length;
+    const shouldSyncOmnipair =
       !skipChain && (forceSync || bySig.size === 0 || !warmEnough);
+    // Bonding history must feed 24h volume even when Omnipair rows already warm the DB.
+    const shouldSyncBonding =
+      !skipChain && (forceSync || bondingRows < 5 || bySig.size === 0);
 
     let source: "supabase" | "chain" | "merged" =
       bySig.size > 0 ? "supabase" : "supabase";
 
-    if (shouldSyncChain) {
+    if (shouldSyncOmnipair) {
       try {
         const connection = getIndexerRpcConnection();
         const indexed = await indexOmnipairSwapsForMint(connection, mint, {
@@ -140,7 +146,45 @@ export async function GET(
       } catch (e) {
         console.warn("[trade-history] on-chain sync failed", mint, e);
       }
-    } else {
+    }
+
+    if (shouldSyncBonding) {
+      try {
+        const connection = getIndexerRpcConnection();
+        const bonding = await indexBondingTradesForMint(connection, mint, {
+          limit: Math.min(120, Math.max(limit, 40)),
+          knownSignatures: new Set(bySig.keys()),
+          deadlineMs: Date.now() + (bondingRows > 0 ? 5_000 : 14_000),
+          persist: true,
+        });
+        for (const t of bonding.trades) {
+          bySig.set(t.signature, {
+            mint: t.mint,
+            signature: t.signature,
+            side: t.side,
+            wallet: t.wallet,
+            sol_amount_raw: t.sol_amount_raw,
+            token_amount_raw: t.token_amount_raw,
+            price_sol: t.price_sol,
+            timestamp: t.timestamp,
+            source: t.source,
+          });
+        }
+        if (bonding.tradesIndexed > 0) {
+          source = bySig.size > bonding.tradesIndexed ? "merged" : "chain";
+        }
+        console.info("[trade-history] bonding sync", {
+          mint,
+          signaturesFetched: bonding.signaturesFetched,
+          tradesIndexed: bonding.tradesIndexed,
+          ms: Date.now() - started,
+        });
+      } catch (e) {
+        console.warn("[trade-history] bonding sync failed", mint, e);
+      }
+    }
+
+    if (!shouldSyncOmnipair && !shouldSyncBonding) {
       source = "supabase";
       console.info("[trade-history] warm supabase fast-path", {
         mint,

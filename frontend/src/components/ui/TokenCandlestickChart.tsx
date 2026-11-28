@@ -552,8 +552,10 @@ export default function TokenCandlestickChart({
         />
         <div ref={wrapRef} className="relative z-[2] w-full min-h-[400px]" />
         {loading ? (
-          <div className="pointer-events-none absolute inset-0 z-[3] flex items-center justify-center">
-            <span className="text-xs text-white/40">Loading chart…</span>
+          <div className="pointer-events-none absolute inset-0 z-[3] flex items-center justify-center bg-[#0a0a0a]/85">
+            <span className="rounded-full bg-zinc-800/90 px-3 py-1.5 text-xs text-white/45">
+              Loading chart…
+            </span>
           </div>
         ) : null}
         {error ? (
